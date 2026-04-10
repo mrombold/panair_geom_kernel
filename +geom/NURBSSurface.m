@@ -170,66 +170,16 @@ classdef NURBSSurface < handle
         end
 
         function [Su, Sv] = partialDerivatives(obj, u, v)
-            u = obj.clampU(u);
-            v = obj.clampV(v);
-
-            uspan = geom.BasisFunctions.FindSpan(obj.n, obj.p, u, obj.U);
-            vspan = geom.BasisFunctions.FindSpan(obj.m, obj.q, v, obj.V);
-            Nu_d  = geom.BasisFunctions.DersBasisFuns(uspan, u, obj.p, 1, obj.U);
-            Nv_d  = geom.BasisFunctions.DersBasisFuns(vspan, v, obj.q, 1, obj.V);
-
-            Sw  = zeros(1, 4);
-            Swu = zeros(1, 4);
-            Swv = zeros(1, 4);
-
-            for l = 0:obj.q
-                temp  = zeros(1, 4);
-                tempu = zeros(1, 4);
-                for i_l = 0:obj.p
-                    ii  = uspan - obj.p + i_l;
-                    jj  = vspan - obj.q + l;
-                    wij = obj.W(ii, jj);
-                    Pij = squeeze(obj.P(ii, jj, :))';
-                    Pw  = [Pij * wij, wij];
-                    temp  = temp  + Nu_d(1, i_l+1) * Pw;
-                    tempu = tempu + Nu_d(2, i_l+1) * Pw;
-                end
-                Sw  = Sw  + Nv_d(1, l+1) * temp;
-                Swu = Swu + Nv_d(1, l+1) * tempu;
-                Swv = Swv + Nv_d(2, l+1) * temp;
-            end
-
-            w  = Sw(4);
-            A  = Sw(1:3);
-            Au = Swu(1:3);
-            Av = Swv(1:3);
-            wu = Swu(4);
-            wv = Swv(4);
-
-            Su = (Au - wu * A / w) / w;
-            Sv = (Av - wv * A / w) / w;
+            SKL = obj.derivatives(u, v, 1);
+            Su = SKL{2,1};
+            Sv = SKL{1,2};
         end
 
         function [Suu, Suv, Svv] = secondPartials(obj, u, v)
-            if exist('geom.SurfaceEval', 'class') == 8
-                [~, ~, Suu, Suv, Svv] = geom.SurfaceEval.firstSecond(obj, u, v);
-                return;
-            end
-
-            du = 1e-6 * max(obj.U(end) - obj.U(1), 1);
-            dv = 1e-6 * max(obj.V(end) - obj.V(1), 1);
-
-            [Su_p, ~] = obj.partialDerivatives(obj.clampU(u + du), v);
-            [Su_m, ~] = obj.partialDerivatives(obj.clampU(u - du), v);
-            Suu = (Su_p - Su_m) / (2 * du);
-
-            [Su_vp, ~] = obj.partialDerivatives(u, obj.clampV(v + dv));
-            [Su_vm, ~] = obj.partialDerivatives(u, obj.clampV(v - dv));
-            Suv = (Su_vp - Su_vm) / (2 * dv);
-
-            [~, Sv_p] = obj.partialDerivatives(u, obj.clampV(v + dv));
-            [~, Sv_m] = obj.partialDerivatives(u, obj.clampV(v - dv));
-            Svv = (Sv_p - Sv_m) / (2 * dv);
+            SKL = obj.derivatives(u, v, 2);
+            Suu = SKL{3,1};
+            Suv = SKL{2,2};
+            Svv = SKL{1,3};
         end
 
         function N = normal(obj, u, v)
@@ -241,28 +191,202 @@ classdef NURBSSurface < handle
             end
         end
 
-        function [K, H] = curvatures(obj, u, v)
-            if exist('geom.SurfaceEval', 'class') == 8
-                [K, H] = geom.SurfaceEval.curvatures(obj, u, v);
+        function [K, H, Nhat] = curvatures(obj, u, v)
+            [Su, Sv, Suu, Suv, Svv] = obj.firstSecond(u, v);
+
+            N = cross(Su, Sv);
+            nrm = norm(N);
+            if nrm < eps
+                Nhat = [0 0 0];
+                K = NaN;
+                H = NaN;
                 return;
             end
-
-            [Su, Sv] = obj.partialDerivatives(u, v);
-            N = cross(Su, Sv);
-            N = N / norm(N);
-            [Suu, Suv, Svv] = obj.secondPartials(u, v);
+            Nhat = N / nrm;
 
             E = dot(Su, Su);
             F = dot(Su, Sv);
             G = dot(Sv, Sv);
+            L = dot(Suu, Nhat);
+            M = dot(Suv, Nhat);
+            N2 = dot(Svv, Nhat);
+            den = E * G - F * F;
+            if abs(den) < eps
+                K = NaN;
+                H = NaN;
+                return;
+            end
+            K = (L * N2 - M * M) / den;
+            H = (E * N2 - 2 * F * M + G * L) / (2 * den);
+        end
 
-            L = dot(Suu, N);
-            M = dot(Suv, N);
-            Nf = dot(Svv, N);
+        function SKL = derivatives(obj, u, v, d)
+        % DERIVATIVES  Analytic rational surface derivatives up to order d.
+            if nargin < 4 || isempty(d)
+                d = 1;
+            end
 
-            den = E * G - F^2;
-            K = (L * Nf - M^2) / den;
-            H = (E * Nf - 2 * F * M + G * L) / (2 * den);
+            u = max(obj.domainU(1), min(obj.domainU(2), u));
+            v = max(obj.domainV(1), min(obj.domainV(2), v));
+
+            du = min(d, obj.p);
+            dv = min(d, obj.q);
+
+            uspan = geom.BasisFunctions.FindSpan(obj.n, obj.p, u, obj.U);
+            vspan = geom.BasisFunctions.FindSpan(obj.m, obj.q, v, obj.V);
+            Nu = geom.BasisFunctions.DersBasisFuns(uspan, u, obj.p, du, obj.U);
+            Nv = geom.BasisFunctions.DersBasisFuns(vspan, v, obj.q, dv, obj.V);
+
+            Aders = cell(d+1, d+1);
+            wders = zeros(d+1, d+1);
+            for k = 0:d
+                for l = 0:d
+                    Aders{k+1,l+1} = zeros(1,3);
+                end
+            end
+
+            for k = 0:du
+                for l = 0:dv
+                    Akl = zeros(1,3);
+                    wkl = 0.0;
+                    for i = 0:obj.p
+                        ii = uspan - obj.p + i;
+                        for j = 0:obj.q
+                            jj = vspan - obj.q + j;
+                            B = Nu(k+1, i+1) * Nv(l+1, j+1);
+                            wij = obj.W(ii, jj);
+                            Pij = squeeze(obj.P(ii, jj, :))';
+                            Akl = Akl + B * wij * Pij;
+                            wkl = wkl + B * wij;
+                        end
+                    end
+                    Aders{k+1,l+1} = Akl;
+                    wders(k+1,l+1) = wkl;
+                end
+            end
+
+            SKL = cell(d+1, d+1);
+            for k = 0:d
+                for l = 0:d
+                    SKL{k+1,l+1} = zeros(1,3);
+                end
+            end
+
+            w00 = wders(1,1);
+            if abs(w00) < eps
+                error('geom.NURBSSurface:ZeroWeight', ...
+                    'Surface weight function vanished at (u,v).');
+            end
+
+            for k = 0:d
+                for l = 0:d
+                    vkl = Aders{k+1,l+1};
+                    for j = 1:l
+                        vkl = vkl - nchoosek(l,j) * wders(1,j+1) * SKL{k+1,l-j+1};
+                    end
+                    for i = 1:k
+                        vkl = vkl - nchoosek(k,i) * wders(i+1,1) * SKL{k-i+1,l+1};
+                        for j = 1:l
+                            vkl = vkl - nchoosek(k,i) * nchoosek(l,j) * ...
+                                wders(i+1,j+1) * SKL{k-i+1,l-j+1};
+                        end
+                    end
+                    SKL{k+1,l+1} = vkl / w00;
+                end
+            end
+        end
+
+        function [Su, Sv, Suu, Suv, Svv] = firstSecond(obj, u, v)
+        % FIRSTSECOND  Convenience wrapper for first and second derivatives.
+            SKL = obj.derivatives(u, v, 2);
+            Su  = SKL{2,1};
+            Sv  = SKL{1,2};
+            Suu = SKL{3,1};
+            Suv = SKL{2,2};
+            Svv = SKL{1,3};
+        end
+
+        function [u_c, v_c, pt_c, d_c] = closestPoint(obj, P, u0, v0)
+        % CLOSESTPOINT  Closest point on surface to query point P.
+        %
+        %   [u,v,pt,d] = closestPoint(P)
+        %   [u,v,pt,d] = closestPoint(P,u0,v0)
+
+            P = P(:)';
+
+            if nargin < 3 || isempty(u0) || nargin < 4 || isempty(v0)
+                [u0, v0] = obj.coarseSearchPoint(P, 12, 12);
+            end
+
+            u = max(obj.domainU(1), min(obj.domainU(2), u0));
+            v = max(obj.domainV(1), min(obj.domainV(2), v0));
+
+            for iter = 1:50
+                Sk = obj.evaluate(u, v);
+                [Su, Sv] = obj.partialDerivatives(u, v);
+                [Suu, Suv, Svv] = obj.secondPartials(u, v);
+
+                r  = Sk - P;
+                F  = [dot(r, Su); dot(r, Sv)];
+                J  = [dot(Su, Su) + dot(r, Suu), dot(Su, Sv) + dot(r, Suv); ...
+                      dot(Su, Sv) + dot(r, Suv), dot(Sv, Sv) + dot(r, Svv)];
+
+                if rcond(J) < eps
+                    break;
+                end
+
+                delta = -J \ F;
+                u_new = max(obj.domainU(1), min(obj.domainU(2), u + delta(1)));
+                v_new = max(obj.domainV(1), min(obj.domainV(2), v + delta(2)));
+
+                if norm([u_new-u, v_new-v]) < 1e-10
+                    u = u_new;
+                    v = v_new;
+                    break;
+                end
+                u = u_new;
+                v = v_new;
+            end
+
+            pt_c = obj.evaluate(u, v);
+            d_c  = norm(pt_c - P);
+            u_c  = u;
+            v_c  = v;
+        end
+
+        function [u_all, v_all, pt_all, d_all] = closestPointBatch(obj, pts, nu_c, nv_c)
+        % CLOSESTPOINTBATCH  Closest-point projection for many query points.
+            if nargin < 3 || isempty(nu_c), nu_c = 16; end
+            if nargin < 4 || isempty(nv_c), nv_c = 16; end
+
+            N = size(pts, 1);
+            u_all  = zeros(N, 1);
+            v_all  = zeros(N, 1);
+            pt_all = zeros(N, 3);
+            d_all  = zeros(N, 1);
+
+            [u_g, v_g, pts_g] = obj.isoGrid(nu_c, nv_c);
+            pts_flat = reshape(pts_g, [], 3);
+            [UG, VG] = meshgrid(u_g, v_g);
+            u_flat = UG';
+            v_flat = VG';
+            u_flat = u_flat(:);
+            v_flat = v_flat(:);
+
+            for k = 1:N
+                P = pts(k, :);
+                d2 = sum((pts_flat - P).^2, 2);
+                [~, idx] = min(d2);
+                [u_all(k), v_all(k), pt_all(k,:), d_all(k)] = ...
+                    obj.closestPoint(P, u_flat(idx), v_flat(idx));
+            end
+        end
+
+        function [u_inv, v_inv, pt_inv, err] = invertPoint(obj, P, u0, v0)
+        % INVERTPOINT  Alias for closestPoint.
+            if nargin < 3, u0 = []; end
+            if nargin < 4, v0 = []; end
+            [u_inv, v_inv, pt_inv, err] = obj.closestPoint(P, u0, v0);
         end
     end
 
@@ -482,6 +606,66 @@ classdef NURBSSurface < handle
             P2 = bsxfun(@rdivide, Pw(:, 1:3), W2);
             C = geom.NURBSCurve(P2, obj.q, obj.V, W2);
         end
+ 
+        function Ssub = extractUV(obj, urange, vrange)
+        % EXTRACTUV  Exact sub-patch extraction by repeated splitting.
+            ua = urange(1); ub = urange(2);
+            va = vrange(1); vb = vrange(2);
+            if ~(ua < ub && va < vb)
+                error('geom.NURBSSurface:extractUV', 'Require ua < ub and va < vb.');
+            end
+
+            Swork = obj;
+            tol = 1e-12;
+            if ua > Swork.U(1) + tol
+                [~, Swork] = Swork.splitU(ua);
+            end
+            if ub < 1 - tol
+                ub_local = (ub - ua) / (1 - ua);
+                [Swork, ~] = Swork.splitU(ub_local);
+            end
+            if va > Swork.V(1) + tol
+                [~, Swork] = Swork.splitV(va);
+            end
+            if vb < 1 - tol
+                vb_local = (vb - va) / (1 - va);
+                [Swork, ~] = Swork.splitV(vb_local);
+            end
+            Ssub = Swork;
+        end
+
+        function B = boundaryCurves(obj)
+        % BOUNDARYCURVES  Return the four patch boundary curves.
+            B.u0 = obj.isoCurveV(obj.U(1));
+            B.u1 = obj.isoCurveV(obj.U(end));
+            B.v0 = obj.isoCurveU(obj.V(1));
+            B.v1 = obj.isoCurveU(obj.V(end));
+        end
+
+        function C = extractInnerSpanCurve(obj)
+        % EXTRACTINNERSPANCURVE  Representative spanwise/inboard-side curve.
+            u0 = obj.domainU(1);
+            u1 = obj.domainU(2);
+            u_pick = u0 + 0.05 * (u1 - u0);
+            u_pick = max(u0, min(u1, u_pick));
+            C = obj.isoCurveV(u_pick);
+        end
+
+        function C = extractInnerCircCurve(obj)
+        % EXTRACTINNERCIRCCURVE  Representative circumferential-side curve.
+            v0 = obj.domainV(1);
+            v1 = obj.domainV(2);
+            v_pick = v0 + 0.05 * (v1 - v0);
+            v_pick = max(v0, min(v1, v_pick));
+            C = obj.isoCurveU(v_pick);
+        end
+
+        function St = swapUV(obj)
+        % SWAPUV  Swap surface parameter directions.
+            P2 = permute(obj.P, [2 1 3]);
+            W2 = obj.W.';
+            St = geom.NURBSSurface(P2, obj.q, obj.p, obj.V, obj.U, W2);
+        end
     end
 
     methods
@@ -562,6 +746,25 @@ classdef NURBSSurface < handle
 
         function v = clampV(obj, v)
             v = max(obj.V(1), min(obj.V(end), v));
+        end
+
+        function [u0, v0] = coarseSearchPoint(obj, P, nu, nv)
+            u_c = linspace(obj.domainU(1), obj.domainU(2), nu);
+            v_c = linspace(obj.domainV(1), obj.domainV(2), nv);
+            best_d2 = inf;
+            u0 = u_c(1);
+            v0 = v_c(1);
+            for i = 1:nu
+                for j = 1:nv
+                    pt = obj.evaluate(u_c(i), v_c(j));
+                    d2 = sum((pt - P).^2);
+                    if d2 < best_d2
+                        best_d2 = d2;
+                        u0 = u_c(i);
+                        v0 = v_c(j);
+                    end
+                end
+            end
         end
     end
 
