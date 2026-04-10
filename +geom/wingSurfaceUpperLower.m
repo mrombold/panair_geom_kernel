@@ -4,30 +4,11 @@ function [S_upper, S_lower, details] = wingSurfaceUpperLower(airfoil_xy, spans, 
 %   [S_upper, S_lower, details] = geom.wingSurfaceUpperLower( ...
 %       airfoil_xy, spans, chords, sweeps, twists, dihedrals, ...)
 %
-% Inputs:
-%   airfoil_xy  - [N x 2] Selig-format airfoil coordinates for one section,
-%                 or cell array of per-section Selig airfoils
-%   spans       - [nsec x 1] spanwise stations (Y)
-%   chords      - [nsec x 1] chord lengths
-%   sweeps      - [nsec x 1] leading-edge X offsets (optional)
-%   twists      - [nsec x 1] twist angles in deg, positive nose-up (optional)
-%   dihedrals   - [nsec x 1] Z offsets (optional)
-%
-% Name-value options:
-%   'Degree'          - curve degree for branch fitting (default 3)
-%   'NCP'             - control points per section branch (default 18)
-%   'CloseTE'         - force upper/lower TE coincidence (default true)
-%   'TEPoint'         - 'average' | 'first' | 'last' (default 'average')
-%   'Method'          - loft method passed to geom.LoftedSurface (default 'chord')
-%   'QuarterChordX'   - twist axis x/c location (default 0.25)
-%
-% Outputs:
-%   S_upper, S_lower  - lofted upper and lower surfaces
-%   details           - struct with section curves and split metadata
+% This version uses exact branch interpolation for robustness with the
+% current repo's globalCurveInterp implementation.
 
     pa = inputParser;
     addParameter(pa, 'Degree', 3, @(x)isnumeric(x)&&isscalar(x)&&x>=1);
-    addParameter(pa, 'NCP', 18, @(x)isnumeric(x)&&isscalar(x)&&x>=4);
     addParameter(pa, 'CloseTE', true, @(x)islogical(x) || isnumeric(x));
     addParameter(pa, 'TEPoint', 'average', @(s)ischar(s) || isstring(s));
     addParameter(pa, 'Method', 'chord', @(s)ischar(s) || isstring(s));
@@ -56,7 +37,6 @@ function [S_upper, S_lower, details] = wingSurfaceUpperLower(airfoil_xy, spans, 
     end
 
     p = opts.Degree;
-    n_cp = opts.NCP;
 
     upper_curves = cell(nsec,1);
     lower_curves = cell(nsec,1);
@@ -76,8 +56,9 @@ function [S_upper, S_lower, details] = wingSurfaceUpperLower(airfoil_xy, spans, 
         P_up = [xy_up(:,1), zeros(size(xy_up,1),1), xy_up(:,2)];
         P_lo = [xy_lo(:,1), zeros(size(xy_lo,1),1), xy_lo(:,2)];
 
-        Cup = geom.LoftedSurface.globalCurveInterp(P_up, p, min(n_cp, size(P_up,1)));
-        Clo = geom.LoftedSurface.globalCurveInterp(P_lo, p, min(n_cp, size(P_lo,1)));
+        % Use exact interpolation on each branch for compatibility/robustness.
+        Cup = geom.LoftedSurface.globalCurveInterp(P_up, p, size(P_up,1));
+        Clo = geom.LoftedSurface.globalCurveInterp(P_lo, p, size(P_lo,1));
 
         chord_k    = chords(k);
         twist_k    = twists(k) * pi/180;
