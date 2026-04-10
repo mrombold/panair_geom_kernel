@@ -5,22 +5,21 @@ function demo_wing_upper_lower()
     close all;
     clc;
 
-    script_dir = fileparts(mfilename('fullpath'));
-    if ~isempty(script_dir)
-        addpath(script_dir);
-    end
-
     fprintf('=== Wing Upper/Lower Surface Demo ===\n');
 
-    if exist('geom.wingSurfaceUpperLower', 'file') ~= 2
+    rehash
+    if isempty(which('geom.wingSurfaceUpperLower'))
         error('Need geom.wingSurfaceUpperLower on the MATLAB path.');
     end
-    if exist('geom.splitAirfoilSelig', 'file') ~= 2
+    if isempty(which('geom.splitAirfoilSelig'))
         error('Need geom.splitAirfoilSelig on the MATLAB path.');
     end
 
+    % Helper returns LE->upper->TE->lower->LE style, so reorder to true Selig:
+    % TE -> upper -> LE -> lower -> TE
     [x_af, y_af] = geom.Aircraft.naca5Coords(23012, 80);
-    airfoil_xy = [x_af, y_af];
+    xy_raw = [x_af, y_af];
+    airfoil_xy = localReorderToSelig(xy_raw);
 
     spans     = [0; 1.2; 2.6; 4.2; 6.0];
     chords    = [3.0; 2.7; 2.2; 1.7; 1.2];
@@ -30,7 +29,7 @@ function demo_wing_upper_lower()
 
     [S_up, S_lo, details] = geom.wingSurfaceUpperLower( ...
         airfoil_xy, spans, chords, sweeps, twists, dihedrals, ...
-        'CloseTE', true, 'TEPoint', 'average', 'NCP', 20);
+        'CloseTE', true, 'TEPoint', 'average');
 
     if isa(S_up, 'geom.LoftedSurface'), S_up_plot = S_up.surface; else, S_up_plot = S_up; end
     if isa(S_lo, 'geom.LoftedSurface'), S_lo_plot = S_lo.surface; else, S_lo_plot = S_lo; end
@@ -53,9 +52,10 @@ function demo_wing_upper_lower()
 
     figure('Name', 'Root airfoil branches');
     hold on;
+    plot(airfoil_xy(:,1), airfoil_xy(:,2), 'k.-', 'LineWidth', 1.0);
     plot(xy_up(:,1), xy_up(:,2), '-o', 'LineWidth', 1.5);
     plot(xy_lo(:,1), xy_lo(:,2), '-o', 'LineWidth', 1.5);
-    legend('Upper: TE->LE', 'Lower: LE->TE', 'Location', 'Best');
+    legend('Selig-ordered input', 'Upper: TE->LE', 'Lower: LE->TE', 'Location', 'Best');
     title('Split Selig airfoil branches');
     xlabel('x/c'); ylabel('z/c');
     axis equal; grid on;
@@ -63,4 +63,20 @@ function demo_wing_upper_lower()
     fprintf('\n=== Summary ===\n');
     fprintf('This builds the wing as two separate surfaces from Selig airfoil input.\n');
     fprintf('That makes wing-body intersection and fuselage splitting much easier.\n');
+end
+
+function xy_selig = localReorderToSelig(xy_raw)
+% Convert LE->upper->TE->lower->LE style to TE->upper->LE->lower->TE.
+
+    x = xy_raw(:,1);
+    [~, iTE] = max(x);  % trailing edge location in helper ordering
+
+    upper_LE_to_TE = xy_raw(1:iTE, :);
+    lower_TE_to_LE = xy_raw(iTE:end, :);
+
+    upper_TE_to_LE = flipud(upper_LE_to_TE);      % TE -> upper -> LE
+    lower_LE_to_TE = flipud(lower_TE_to_LE);      % LE -> lower -> TE
+
+    % Avoid duplicating the LE point in the join
+    xy_selig = [upper_TE_to_LE; lower_LE_to_TE(2:end,:)];
 end
