@@ -1,60 +1,33 @@
+
 classdef LoftedSurface < handle
-% LOFTEDSURFACE  Surface created by skinning through a set of section curves.
-%
-%   Constructs a NURBS surface by interpolating or approximating through
-%   a collection of cross-sectional NURBSCurve objects placed at v-parameter
-%   stations.  This is the primary aircraft fuselage/wing-section operation.
-%
-%   The section curves must all have compatible degree and the same number
-%   of control points.  If they do not, call harmonize() first.
-%
-%   Construction:
-%     S = geom.LoftedSurface(curves)
-%     S = geom.LoftedSurface(curves, 'q', 3, 'method', 'chord')
-%
-%   Options (name-value):
-%     q       - degree in v (spanwise) direction  (default: min(3, nsec-1))
-%     method  - 'uniform' | 'chord' | 'centripetal'  (default: 'chord')
-%               Sets the v-parameterization across sections.
-%     vParams - Manual v-parameter values for each section [nsec x 1]
-%
-%   Properties:
-%     surface   - the resulting geom.NURBSSurface object
-%     sections  - cell array of input NURBSCurve sections
-%
-%   Methods:
-%     S.plot(nu, nv)           - plot the lofted surface
-%
-% Reference: Piegl & Tiller, "The NURBS Book" Section 10.3 (Skinning).
+    % LOFTEDSURFACE Surface created by skinning through section curves.
+    %
+    % This version performs an actual spanwise interpolation solve for each
+    % chordwise control-point column rather than simply stacking section
+    % control points into the surface net.
+    %
+    % Reference:
+    %   Piegl & Tiller, The NURBS Book, skinning / global interpolation.
 
     properties
-        surface     % geom.NURBSSurface
-        sections    % cell array of input NURBSCurve
-        vParams     % [nsec x 1] parameter values for each section
+        surface   % geom.NURBSSurface
+        sections  % harmonized section curves
+        vParams   % section parameters in v
     end
 
-    % ------------------------------------------------------------------ %
-    %  Construction
-    % ------------------------------------------------------------------ %
     methods
-
         function obj = LoftedSurface(curves, varargin)
-        % Constructor.
-        %   curves  - cell array of geom.NURBSCurve objects
-
             if ~iscell(curves)
                 error('LoftedSurface: curves must be a cell array of NURBSCurve.');
             end
-
             nsec = numel(curves);
             if nsec < 2
                 error('LoftedSurface: need at least 2 section curves.');
             end
 
-            % Parse options
             pa = inputParser;
-            addParameter(pa, 'q',       min(3, nsec-1));
-            addParameter(pa, 'method',  'chord');
+            addParameter(pa, 'q', min(3, nsec - 1));
+            addParameter(pa, 'method', 'chord');
             addParameter(pa, 'vParams', []);
             parse(pa, varargin{:});
             opts = pa.Results;
@@ -65,63 +38,69 @@ classdef LoftedSurface < handle
                 warning('LoftedSurface: degree q reduced to %d (nsec-1).', q);
             end
 
-            % Harmonize curves - ensure compatible parameterization
             curves = geom.LoftedSurface.harmonizeCurves(curves);
             obj.sections = curves;
 
-            % Get number of u control points from first curve
+            p = curves{1}.p;
+            U = curves{1}.U;
             ncp_u = size(curves{1}.P, 1);
-            p     = curves{1}.p;
-            U     = curves{1}.U;
 
-            % ---- Compute v-parameters for sections ----
+            for k = 2:nsec
+                if curves{k}.p ~= p
+                    error('LoftedSurface: harmonization failed to match section degree.');
+                end
+                if size(curves{k}.P,1) ~= ncp_u
+                    error('LoftedSurface: harmonization failed to match section control-point count.');
+                end
+                if numel(curves{k}.U) ~= numel(U) || any(abs(curves{k}.U - U) > 1e-12)
+                    error('LoftedSurface: harmonization failed to match section knot vectors.');
+                end
+            end
+
             if ~isempty(opts.vParams)
-                t = opts.vParams(:) / opts.vParams(end);  % normalize
+                t = opts.vParams(:);
+                if numel(t) ~= nsec
+                    error('LoftedSurface: vParams must have one value per section.');
+                end
+                if abs(t(end) - t(1)) < eps
+                    t = linspace(0,1,nsec).';
+                else
+                    t = (t - t(1)) / (t(end) - t(1));
+                end
             else
                 t = geom.LoftedSurface.sectionParams(curves, opts.method);
             end
             obj.vParams = t;
 
-            % ---- Global v knot vector by averaging ----
             V = geom.LoftedSurface.globalKnotVector(t, q);
 
-            % ---- Interpolate column by column in u ----
-            % For each u-index i, collect the i-th control point from every
-            % section and interpolate through them in v.
-            % This is the "skinning" approach: directly use section CPs as
-            % the u-direction control net rows, then fit v-direction.
-
-            % Control net: [ncp_u x nsec x 3]
-            P_secs = zeros(ncp_u, nsec, 3);
-            W_secs = zeros(ncp_u, nsec);
-
-            for k = 1:nsec
-                P_secs(:,k,:) = curves{k}.P;
-                W_secs(:,k)   = curves{k}.W;
-            end
-
-            % For each u column, do global curve interpolation in v
-            ncp_v = nsec;  % direct skinning: one CP per section
+            % True skinning: for each chordwise control-point column, solve a
+            % spanwise interpolation problem for Cartesian control points and
+            % weights using the common section parameter values t.
+            ncp_v = nsec;
             P_net = zeros(ncp_u, ncp_v, 3);
             W_net = zeros(ncp_u, ncp_v);
 
             for i = 1:ncp_u
-                for d = 1:3
-                    P_net(i,:,d) = P_secs(i,:,d);
+                pts_col = zeros(nsec, 3);
+                w_col   = zeros(nsec, 1);
+                for k = 1:nsec
+                    pts_col(k,:) = curves{k}.P(i,:);
+                    w_col(k)     = curves{k}.W(i);
                 end
-                W_net(i,:) = W_secs(i,:);
+
+                Pcol = geom.LoftedSurface.globalInterpValues(t, pts_col, q, V);
+                Wcol = geom.LoftedSurface.globalInterpValues(t, w_col, q, V);
+
+                P_net(i,:,:) = Pcol;
+                W_net(i,:)   = max(Wcol(:).', eps);
             end
 
             obj.surface = geom.NURBSSurface(P_net, p, q, U, V, W_net);
         end
+    end
 
-    end  % construction
-
-    % ------------------------------------------------------------------ %
-    %  Delegation to surface
-    % ------------------------------------------------------------------ %
     methods
-
         function C = evaluate(obj, u, v)
             C = obj.surface.evaluate(u, v);
         end
@@ -139,166 +118,217 @@ classdef LoftedSurface < handle
             if nargin < 3, nv = 40; end
             obj.surface.plot(nu, nv, varargin{:});
             title('Lofted Surface');
-
-            % Overlay section curves
             hold on;
             for k = 1:numel(obj.sections)
                 obj.sections{k}.plot(100, 'ShowCP', false, ...
                     'Color', [0.9 0.3 0.1], 'LineWidth', 1.5);
             end
         end
-
     end
 
-    % ------------------------------------------------------------------ %
-    %  Static helpers
-    % ------------------------------------------------------------------ %
     methods (Static)
-
         function curves = harmonizeCurves(curves)
-        % HARMONIZECURVES  Ensure all curves have same degree and knot vector.
-        %   Elevates degree and inserts knots as needed.
+            % Ensure common degree, knot vector, and control-point count.
+            %
+            % Strategy:
+            %   1) elevate all section degrees to the maximum degree
+            %   2) refine all sections to the union knot vector (with multiplicity)
+            %   3) if control-point counts still differ, resample/refit all to
+            %      the maximum control-point count and a common uniform knot vector
 
             nsec = numel(curves);
             p_max = max(cellfun(@(c) c.p, curves));
-            ncp_max = max(cellfun(@(c) size(c.P,1), curves));
 
-            % 1. Collect union of all distinct interior knots
-            all_int_knots = [];
+            % 1) Degree elevation to common degree.
             for k = 1:nsec
-                U = curves{k}.U;
-                p = curves{k}.p;
-                int_k = unique(U(p+2:end-p-1));
-                all_int_knots = union(all_int_knots, int_k);
-            end
-
-            % 2. For each curve, insert missing knots so they all share U
-            for k = 1:nsec
-                % Simple approach: re-parameterize all to same # control pts
-                % by sampling and re-fitting if needed.
-                % For now, just use uniform knot vector with ncp_max points.
-                if size(curves{k}.P, 1) ~= ncp_max
-                    curves{k} = geom.LoftedSurface.resampleCurve(curves{k}, ncp_max, p_max);
+                if curves{k}.p < p_max
+                    curves{k} = curves{k}.elevate(p_max - curves{k}.p);
                 end
             end
 
-            % Re-assign uniform knot vector to all
-            U_ref = geom.BasisFunctions.MakeUniformKnotVector(ncp_max-1, p_max);
+            % 2) Refine to common union knot vector (respect multiplicities).
+            U_ref = curves{1}.U;
+            for k = 2:nsec
+                U_ref = geom.LoftedSurface.knotUnionWithMultiplicity(U_ref, curves{k}.U);
+            end
+
             for k = 1:nsec
-                curves{k} = geom.NURBSCurve(curves{k}.P, p_max, U_ref, curves{k}.W);
+                missing = geom.LoftedSurface.knotsToInsert(curves{k}.U, U_ref, p_max);
+                if ~isempty(missing)
+                    curves{k} = curves{k}.refine(missing);
+                end
+            end
+
+            % 3) Fallback resample if any control-count mismatch remains.
+            ncp_all = cellfun(@(c) size(c.P,1), curves);
+            if any(ncp_all ~= ncp_all(1))
+                ncp_max = max(ncp_all);
+                U_common = geom.BasisFunctions.MakeUniformKnotVector(ncp_max - 1, p_max);
+                for k = 1:nsec
+                    curves{k} = geom.LoftedSurface.resampleCurve(curves{k}, ncp_max, p_max);
+                    if numel(curves{k}.U) ~= numel(U_common) || any(abs(curves{k}.U - U_common) > 1e-12)
+                        curves{k} = geom.NURBSCurve(curves{k}.P, p_max, U_common, curves{k}.W);
+                    end
+                end
             end
         end
 
+        function Uout = knotUnionWithMultiplicity(Ua, Ub)
+            % Union two clamped knot vectors while preserving the maximum
+            % multiplicity of each distinct knot value.
+            tol = 1e-12;
+            vals = unique([Ua(:); Ub(:)]).';
+            Uout = [];
+            for a = vals
+                ma = sum(abs(Ua - a) < tol);
+                mb = sum(abs(Ub - a) < tol);
+                Uout = [Uout, repmat(a, 1, max(ma, mb))]; %#ok<AGROW>
+            end
+            Uout = sort(Uout);
+        end
+
+        function Xin = knotsToInsert(Ucur, Uref, p)
+            %#ok<INUSD>
+            % Return the multiset of knots that must be inserted into Ucur so
+            % that its multiplicities match Uref.
+            tol = 1e-12;
+            vals = unique(Uref);
+            Xin = [];
+            for a = vals
+                mcur = sum(abs(Ucur - a) < tol);
+                mref = sum(abs(Uref - a) < tol);
+                if mref > mcur
+                    Xin = [Xin, repmat(a, 1, mref - mcur)]; %#ok<AGROW>
+                end
+            end
+            Xin = sort(Xin);
+        end
+
         function C2 = resampleCurve(C, n_new, p_new)
-        % RESAMPLECURVE  Re-fit a NURBSCurve with n_new control points.
-        %   Uses global interpolation through uniformly-sampled arc-length pts.
-
-            n_samp = max(3*n_new, 50);
+            % Re-fit a curve using approximately arc-length-spaced samples.
+            n_samp = max(3*n_new, 80);
             u_samp = C.arcLengthParam(n_samp);
-            pts    = C.evaluate(u_samp);
-
-            % Global interpolation: solve for control points
+            pts = C.evaluate(u_samp);
             C2 = geom.LoftedSurface.globalCurveInterp(pts, p_new, n_new);
         end
 
         function C = globalCurveInterp(pts, p, n_cp)
-        % GLOBALCURVEINTERP  Global curve interpolation through data points.
-        %   pts    - [m x 3] data points
-        %   p      - degree
-        %   n_cp   - number of control points (default = size(pts,1))
-        %
-        %   Uses chord-length parameterization and knot averaging (P&T §9.2)
-        %   for a much smoother fit than uniform knot placement.
-
-            m  = size(pts,1);
+            % Global interpolation / least-squares fit through point data.
+            m = size(pts,1);
             if nargin < 3 || isempty(n_cp)
                 n_cp = m;
             end
 
-            % Chord-length parameterization
-            dk  = sqrt(sum(diff(pts).^2, 2));
-            tot = sum(dk);
-            if tot < eps
-                t = linspace(0,1,m)';
-            else
-                t = [0; cumsum(dk)/tot];
-            end
+            t = geom.LoftedSurface.dataParams(pts);
+            U = geom.LoftedSurface.knotVectorFromParams(t, p, n_cp);
 
-            % Knot vector: clamped with interior knots by averaging (P&T eq 9.8)
-            % This matches knot placement to actual data distribution.
-            n    = n_cp - 1;
-            U    = zeros(1, n_cp + p + 1);
-            U(end-p:end) = 1;
-            if n_cp == m
-                % Exact interpolation: average consecutive parameters
-                for j = 1:n-p
-                    U(j+p+1) = mean(t(j+1:j+p));
-                end
-            else
-                % Least-squares: spread knots to cover parameter distribution
-                d = m / (n_cp - p);
-                for j = 1:n-p
-                    i_f  = floor(j*d);
-                    alpha = j*d - i_f;
-                    U(j+p+1) = (1-alpha)*t(max(1,i_f)) + alpha*t(min(m,i_f+1));
-                end
-            end
-
-            % Collocation matrix N: m x n_cp
-            N_mat = zeros(m, n_cp);
-            for row = 1:m
-                span = geom.BasisFunctions.FindSpan(n_cp-1, p, t(row), U);
-                Nb   = geom.BasisFunctions.BasisFuns(span, t(row), p, U);
-                for j = 0:p
-                    N_mat(row, span-p+j) = Nb(j+1);
-                end
-            end
-
-            % Solve (least-squares if m > n_cp, interpolation if m == n_cp)
-            if m == n_cp
-                P = N_mat \ pts;
-            else
-                P = (N_mat' * N_mat) \ (N_mat' * pts);
-            end
-
+            P = geom.LoftedSurface.globalInterpValues(t, pts, p, U);
             C = geom.NURBSCurve(P, p, U);
         end
 
-        function t = sectionParams(curves, method)
-        % SECTIONPARAMS  Compute v-parameter values across sections.
+        function X = globalInterpValues(t, Y, p, U)
+            % Solve for control values X given data Y(t).
+            %
+            % t : [m x 1] data parameters in [0,1]
+            % Y : [m x d] data values
+            % p : degree
+            % U : knot vector of target curve
+            %
+            % Returns X : [n_cp x d] control values
 
+            t = t(:);
+            if isvector(Y)
+                Y = Y(:);
+            end
+            m = size(Y,1);
+            n_cp = numel(U) - p - 1;
+
+            Nmat = zeros(m, n_cp);
+            for row = 1:m
+                span = geom.BasisFunctions.FindSpan(n_cp - 1, p, t(row), U);
+                Nb = geom.BasisFunctions.BasisFuns(span, t(row), p, U);
+                for j = 0:p
+                    idx = span - p + j;
+                    Nmat(row, idx) = Nb(j+1);
+                end
+            end
+
+            if m == n_cp
+                X = Nmat \ Y;
+            else
+                X = (Nmat' * Nmat) \ (Nmat' * Y);
+            end
+        end
+
+        function t = dataParams(pts)
+            % Chord-length parameterization of point data.
+            m = size(pts,1);
+            if m < 2
+                t = 0;
+                return;
+            end
+            dk = sqrt(sum(diff(pts,1,1).^2, 2));
+            tot = sum(dk);
+            if tot < eps
+                t = linspace(0,1,m).';
+            else
+                t = [0; cumsum(dk)/tot];
+            end
+        end
+
+        function U = knotVectorFromParams(t, p, n_cp)
+            % Clamped knot vector from data parameters using averaging.
+            m = numel(t);
+            n = n_cp - 1;
+
+            U = zeros(1, n_cp + p + 1);
+            U(end-p:end) = 1;
+
+            if n_cp <= p
+                error('LoftedSurface: n_cp must be at least p+1.');
+            end
+
+            if n_cp == m
+                for j = 1:(n - p)
+                    U(j + p + 1) = mean(t(j+1:j+p));
+                end
+            else
+                d = m / (n_cp - p);
+                for j = 1:(n - p)
+                    jf = floor(j*d);
+                    alpha = j*d - jf;
+                    i0 = max(1, min(m, jf));
+                    i1 = max(1, min(m, jf + 1));
+                    U(j + p + 1) = (1 - alpha) * t(i0) + alpha * t(i1);
+                end
+            end
+        end
+
+        function t = sectionParams(curves, method)
             nsec = numel(curves);
             switch lower(method)
                 case 'uniform'
-                    t = linspace(0, 1, nsec)';
+                    t = linspace(0, 1, nsec).';
 
-                case 'chord'
-                    % Use centroid of each section curve
-                    centroids = zeros(nsec, 3);
+                case {'chord','centripetal'}
+                    reps = zeros(nsec, 3);
                     for k = 1:nsec
-                        u_s = linspace(curves{k}.U(1), curves{k}.U(end), 50);
+                        u_s = curves{k}.arcLengthParam(81);
                         pts = curves{k}.evaluate(u_s);
-                        centroids(k,:) = mean(pts, 1);
-                    end
-                    dk  = sqrt(sum(diff(centroids).^2, 2));
-                    tot = sum(dk);
-                    if tot < eps
-                        t = linspace(0,1,nsec)';
-                    else
-                        t = [0; cumsum(dk)/tot];
+
+                        % Representative section position: average of sampled
+                        % section points. Stable for closed or open sections.
+                        reps(k,:) = mean(pts, 1);
                     end
 
-                case 'centripetal'
-                    centroids = zeros(nsec, 3);
-                    for k = 1:nsec
-                        u_s = linspace(curves{k}.U(1), curves{k}.U(end), 50);
-                        pts = curves{k}.evaluate(u_s);
-                        centroids(k,:) = mean(pts, 1);
+                    dk = sqrt(sum(diff(reps,1,1).^2, 2));
+                    if strcmpi(method, 'centripetal')
+                        dk = sqrt(max(dk, 0));
                     end
-                    dk  = sqrt(sum(diff(centroids).^2, 2)) .^ 0.5;
                     tot = sum(dk);
+
                     if tot < eps
-                        t = linspace(0,1,nsec)';
+                        t = linspace(0,1,nsec).';
                     else
                         t = [0; cumsum(dk)/tot];
                     end
@@ -309,20 +339,15 @@ classdef LoftedSurface < handle
         end
 
         function V = globalKnotVector(t, q)
-        % GLOBALKNOTVECTOR  Compute clamped knot vector from parameter values.
-        %   Averaging method (Piegl & Tiller eq. 9.8).
-
             nsec = numel(t);
-            n    = nsec - 1;  % last CP index
-            m    = n + q + 1;
-            V    = zeros(1, m+1);
+            n = nsec - 1;
+            m = n + q + 1;
+            V = zeros(1, m + 1);
             V(end-q:end) = 1;
 
-            for j = 1:n-q
-                V(j+q+1) = mean(t(j+1:j+q));
+            for j = 1:(n - q)
+                V(j + q + 1) = mean(t(j+1:j+q));
             end
         end
-
-    end  % static methods
-
-end  % classdef LoftedSurface
+    end
+end
