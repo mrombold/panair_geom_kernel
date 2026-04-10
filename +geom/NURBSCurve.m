@@ -518,8 +518,74 @@ classdef NURBSCurve < handle
         %   [u, pt, dist] = closestPoint(P)
         %   [u, pt, dist] = closestPoint(P, u0)   % with initial guess
 
+            P = P(:)';
+            dom = obj.domain;
+
+            if nargin < 3 || isempty(u0)
+                u0 = obj.coarseSearchPoint(P, 32);
+            end
+            u = geom.NURBSCurve.clamp_static(u0, dom);
+
+            for iter = 1:50
+                Ck = obj.evaluate(u);
+                D1 = obj.derivative(u, 1);
+                D2 = obj.derivative(u, 2);
+
+                r  = Ck - P;
+                f1 = dot(r, D1);
+                f2 = dot(D1, D1) + dot(r, D2);
+
+                if abs(f2) < eps
+                    break;
+                end
+
+                du = -f1 / f2;
+                u_new = geom.NURBSCurve.clamp_static(u + du, dom);
+
+                if abs(u_new - u) < 1e-10 && norm(r) < 1e-10
+                    u = u_new;
+                    break;
+                end
+                u = u_new;
+            end
+
+            pt_c = obj.evaluate(u);
+            d_c  = norm(pt_c - P);
+            u_c  = u;
+        end
+
+        function [u_all, pt_all, d_all] = closestPointBatch(obj, pts, n_coarse)
+        % CLOSESTPOINTBATCH  Closest-point projection for many points.
+        %
+        %   [u, pts_c, d] = closestPointBatch(pts)
+        %
+        %   pts      - [N x 3] query points
+        %   n_coarse - coarse search samples (default 64)
+
+            if nargin < 3 || isempty(n_coarse)
+                n_coarse = 64;
+            end
+
+            N = size(pts, 1);
+            u_all  = zeros(N, 1);
+            pt_all = zeros(N, 3);
+            d_all  = zeros(N, 1);
+
+            u_seed = linspace(obj.U(1), obj.U(end), n_coarse);
+            pts_s  = obj.evaluate(u_seed);
+
+            for k = 1:N
+                P = pts(k, :);
+                d2 = sum((pts_s - P).^2, 2);
+                [~, idx] = min(d2);
+                [u_all(k), pt_all(k,:), d_all(k)] = obj.closestPoint(P, u_seed(idx));
+            end
+        end
+
+        function [u_inv, pt_inv, err] = invertPoint(obj, P, u0)
+        % INVERTPOINT  Alias for closestPoint, useful for point inversion APIs.
             if nargin < 3, u0 = []; end
-            [u_c, pt_c, d_c] = geom.Projection.toCurve(obj, P, u0);
+            [u_inv, pt_inv, err] = obj.closestPoint(P, u0);
         end
 
     end  % geometric operations
@@ -615,6 +681,14 @@ classdef NURBSCurve < handle
     methods (Access = private)
         function u = clamp(obj, u)
             u = max(obj.U(1), min(obj.U(end), u));
+        end
+
+        function u0 = coarseSearchPoint(obj, P, n)
+            u_c = linspace(obj.U(1), obj.U(end), n);
+            pts = obj.evaluate(u_c);
+            d2 = sum((pts - P).^2, 2);
+            [~, idx] = min(d2);
+            u0 = u_c(idx);
         end
     end
 
