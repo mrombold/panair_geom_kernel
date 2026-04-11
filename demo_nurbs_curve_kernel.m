@@ -10,13 +10,13 @@
 %   6. Diagnostics: validation, closure, continuity, Greville points
 %   7. Exact split and Bezier decomposition
 %   8. Global interpolation
-%   9. Global least-squares fitting
-%  10. Knot removal test
-%  11. Degree elevation / degree reduction tests
-%  12. Simple constructors: line and quadratic conic
-%
-% Notes:
-%   - The +geom package directory must have its PARENT on the MATLAB path.
+%   9. Global least-squares fit
+%  10. Knot removal
+%  11. Degree elevation / degree reduction
+%  12. Simple constructors
+%  13. Parameterization method comparison
+%  14. Weighted least-squares fit
+%  15. Constrained least-squares fit
 
 clear; close all; clc;
 
@@ -294,7 +294,7 @@ try
 
         Cfit = geom.NURBSCurve.globalLeastSquaresFit(QF, 3, 12, 'chord');
 
-        ufit = geom.NURBSCurve.parameterizeData(QF, 'chord');
+        ufit = geom.NURBSCurve.parameterizeData(QF, 'chord', 3);
         Pfit = Cfit.evaluate(ufit);
         rms_fit = sqrt(mean(sum((Pfit - QF).^2, 2)));
 
@@ -412,6 +412,103 @@ catch ME
 end
 
 %% ======================================================================
+% 13. PARAMETERIZATION METHODS
+%% ======================================================================
+fprintf('\n--- 13. Parameterization methods ---\n');
+try
+    x = linspace(0, 1, 16).';
+    Qp = [x, 0.30*sin(2*pi*x) + 0.06*cos(7*pi*x), 0.10*cos(2*pi*x)];
+
+    methods_list = {'uniform','chord','centripetal','arc_length'};
+    curves_param = cell(size(methods_list));
+
+    fig13 = figure('Name','13 - Parameterization methods');
+    hold on; grid on; axis equal;
+    plot3(Qp(:,1), Qp(:,2), Qp(:,3), 'ko', 'MarkerFaceColor','y', 'MarkerSize', 5);
+
+    cmap = lines(numel(methods_list));
+    for k = 1:numel(methods_list)
+        curves_param{k} = geom.NURBSCurve.globalInterp(Qp, 3, methods_list{k});
+        curves_param{k}.plot(300, 'ShowCP', false, 'Color', cmap(k,:), 'LineWidth', 1.8);
+        fprintf('  %s parameterization: built interpolant\n', methods_list{k});
+    end
+
+    title('Interpolation under different parameterizations');
+    legend({'Data','Uniform','Chord','Centripetal','Arc-length'}, 'Location','best');
+    view(3);
+catch ME
+    fprintf('  Parameterization section failed: %s\n', ME.message);
+end
+
+%% ======================================================================
+% 14. WEIGHTED LEAST-SQUARES FIT
+%% ======================================================================
+fprintf('\n--- 14. Weighted least-squares fit ---\n');
+try
+    x = linspace(0, 1, 100).';
+    Qw = [x, 0.24*sin(2*pi*x) + 0.05*cos(9*pi*x), 0.08*cos(2*pi*x)];
+
+    w = ones(size(Qw,1),1);
+    w(1) = 25;
+    w(end) = 25;
+    w(round(end/2)) = 10;
+
+    Cuw = geom.NURBSCurve.globalLeastSquaresFit(Qw, 3, 12, 'chord');
+    Cwt = geom.NURBSCurve.globalWeightedLeastSquaresFit(Qw, 3, 12, w, 'chord');
+
+    udata = geom.NURBSCurve.parameterizeData(Qw, 'chord', 3);
+    rms_u = sqrt(mean(sum((Cuw.evaluate(udata) - Qw).^2, 2)));
+    rms_w = sqrt(mean(sum((Cwt.evaluate(udata) - Qw).^2, 2)));
+
+    fprintf('  unweighted LSQ RMS = %.8e\n', rms_u);
+    fprintf('  weighted   LSQ RMS = %.8e\n', rms_w);
+
+    fig14 = figure('Name','14 - Weighted least-squares fit');
+    hold on; grid on; axis equal;
+    plot3(Qw(:,1), Qw(:,2), Qw(:,3), 'k.', 'MarkerSize', 9);
+    Cuw.plot(400, 'ShowCP', true, 'ShowKnots', false, 'Color', [0.1 0.3 0.9], 'LineWidth', 1.8);
+    Cwt.plot(400, 'ShowCP', true, 'ShowKnots', false, 'Color', [0.9 0.2 0.2], 'LineWidth', 1.8);
+    title('Weighted vs unweighted LSQ fit');
+    legend({'Data','Unweighted LSQ','Weighted LSQ'}, 'Location','best');
+    view(3);
+catch ME
+    fprintf('  Weighted LSQ section failed: %s\n', ME.message);
+end
+
+%% ======================================================================
+% 15. CONSTRAINED LEAST-SQUARES FIT
+%% ======================================================================
+fprintf('\n--- 15. Constrained least-squares fit ---\n');
+try
+    x = linspace(0, 1, 90).';
+    Qc = [x, 0.22*sin(2*pi*x) + 0.02*cos(11*pi*x), 0.07*cos(2*pi*x)];
+
+    Cfree = geom.NURBSCurve.globalLeastSquaresFit(Qc, 3, 12, 'centripetal');
+    Cfix  = geom.NURBSCurve.globalLeastSquaresFitFixedEnds(Qc, 3, 12, 'centripetal');
+
+    fprintf('  free fit first CP  = [%.6f %.6f %.6f]\n', Cfree.P(1,:));
+    fprintf('  fixed fit first CP = [%.6f %.6f %.6f]\n', Cfix.P(1,:));
+    fprintf('  data first point   = [%.6f %.6f %.6f]\n', Qc(1,:));
+
+    fprintf('  free fit last CP   = [%.6f %.6f %.6f]\n', Cfree.P(end,:));
+    fprintf('  fixed fit last CP  = [%.6f %.6f %.6f]\n', Cfix.P(end,:));
+    fprintf('  data last point    = [%.6f %.6f %.6f]\n', Qc(end,:));
+
+    fig15 = figure('Name','15 - Constrained least-squares fit');
+    hold on; grid on; axis equal;
+    plot3(Qc(:,1), Qc(:,2), Qc(:,3), 'k.', 'MarkerSize', 9);
+    Cfree.plot(400, 'ShowCP', true, 'ShowKnots', false, 'Color', [0.1 0.4 0.9], 'LineWidth', 1.8);
+    Cfix.plot(400,  'ShowCP', true, 'ShowKnots', false, 'Color', [0.9 0.2 0.2], 'LineWidth', 1.8);
+    plot3(Qc(1,1), Qc(1,2), Qc(1,3), 'ko', 'MarkerFaceColor', 'y', 'MarkerSize', 7);
+    plot3(Qc(end,1), Qc(end,2), Qc(end,3), 'ks', 'MarkerFaceColor', 'g', 'MarkerSize', 7);
+    title('Constrained LSQ with fixed endpoints');
+    legend({'Data','Free LSQ','Fixed-end LSQ','Start point','End point'}, 'Location','best');
+    view(3);
+catch ME
+    fprintf('  Constrained LSQ section failed: %s\n', ME.message);
+end
+
+%% ======================================================================
 %  SUMMARY
 %% ======================================================================
 fprintf('\n=== Curve Kernel Demo Complete ===\n');
@@ -428,3 +525,6 @@ fprintf('  (9) LSQ fit\n');
 fprintf(' (10) Knot removal\n');
 fprintf(' (11) Degree editing\n');
 fprintf(' (12) Constructors\n');
+fprintf(' (13) Parameterization methods\n');
+fprintf(' (14) Weighted LSQ fit\n');
+fprintf(' (15) Constrained LSQ fit\n');
