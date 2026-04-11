@@ -215,6 +215,11 @@ classdef MeshWriter
 
                 for i = 1:m.nu-1
                     for j = 1:m.nv-1
+                        id1 = i     + (j-1) * m.nu;
+                        id2 = i + 1 + (j-1) * m.nu;
+                        id3 = i + 1 +  j    * m.nu;
+                        id4 = i     +  j    * m.nu;
+
                         V = zeros(4,3);
                         V(1,:) = [m.X(i,j),     m.Y(i,j),     m.Z(i,j)];
                         V(2,:) = [m.X(i+1,j),   m.Y(i+1,j),   m.Z(i+1,j)];
@@ -224,6 +229,13 @@ classdef MeshWriter
                         if any(~isfinite(V(:)))
                             continue;
                         end
+
+                        ids = [id1 id2 id3 id4];
+                        ids = geom.MeshWriter.orientCellWithNormals(m, ids);
+                        V = V([find([id1 id2 id3 id4] == ids(1),1), ...
+                               find([id1 id2 id3 id4] == ids(2),1), ...
+                               find([id1 id2 id3 id4] == ids(3),1), ...
+                               find([id1 id2 id3 id4] == ids(4),1)], :);
 
                         [n1, a1] = geom.MeshWriter.triNormal(V(1,:), V(2,:), V(3,:));
                         if a1 > opts.AreaTolerance
@@ -408,9 +420,8 @@ classdef MeshWriter
         end
 
         function [pts, quads, nrms, has_normals] = meshToValidQuadSoup(mesh, offset0)
-            % IMPORTANT:
             % pts = [X(:), Y(:), Z(:)] uses MATLAB column-major ordering.
-            % For an [nu x nv] array, linear index is:
+            % For an [nu x nv] array:
             %   idx(i,j) = i + (j-1)*nu
 
             pts = [mesh.X(:), mesh.Y(:), mesh.Z(:)];
@@ -438,8 +449,46 @@ classdef MeshWriter
                         continue;
                     end
 
-                    quads(end+1,:) = offset0 + [id1-1, id2-1, id3-1, id4-1]; %#ok<AGROW>
+                    ids = [id1 id2 id3 id4];
+                    ids = geom.MeshWriter.orientCellWithNormals(mesh, ids);
+
+                    quads(end+1,:) = offset0 + (ids - 1); %#ok<AGROW>
                 end
+            end
+        end
+
+        function ids = orientCellWithNormals(mesh, ids)
+            if ~isfield(mesh, 'normals') || isempty(mesh.normals)
+                return;
+            end
+
+            pts = [mesh.X(:), mesh.Y(:), mesh.Z(:)];
+            nrms = reshape(mesh.normals, [], 3);
+
+            V = pts(ids, :);
+            N = nrms(ids, :);
+            keep = all(isfinite(N), 2);
+
+            if ~any(keep)
+                return;
+            end
+
+            navg = mean(N(keep, :), 1);
+            nrm = norm(navg);
+            if nrm < eps
+                return;
+            end
+            navg = navg / nrm;
+
+            ncell = cross(V(2,:) - V(1,:), V(3,:) - V(1,:));
+            nrm2 = norm(ncell);
+            if nrm2 < eps
+                return;
+            end
+            ncell = ncell / nrm2;
+
+            if dot(ncell, navg) < 0
+                ids = [ids(1), ids(4), ids(3), ids(2)];
             end
         end
 
