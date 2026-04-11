@@ -1,20 +1,6 @@
 %% DEMO_WING_MESH_EXPORT.m
 % Build a simple wing from root and tip airfoils, loft upper/lower surfaces,
 % mesh them, and export structured meshes through geom.MeshWriter.
-%
-% This demo:
-%   1) reads root and tip airfoil files
-%   2) fits a continuous NURBS airfoil to each
-%   3) finds the geometric LE and splits each into upper/lower fitted curves
-%   4) places root and tip sections in 3D using chord/sweep/incidence/twist/dihedral
-%   5) lofts separate upper and lower wing surfaces
-%   6) creates structured surface meshes with isoMesh()
-%   7) exports CSV / VTK / WGS
-%
-% Notes:
-%   - Only upper and lower wing skins are meshed here.
-%   - With only root/tip sections, loft degree must be 1.
-%   - WGS export expects full structured networks, so use untrimmed meshes.
 
 clear; close all; clc;
 
@@ -44,12 +30,15 @@ nv = 21;   % spanwise
 % Export switches
 doCSV = true;
 doVTK = true;
+doSTL = true;
 doWGS = true;
 
 % Output names
 csvUpper = 'wing_upper_mesh.csv';
 csvLower = 'wing_lower_mesh.csv';
 vtkFile  = 'wing_upper_lower.vtk';
+stlUpper = 'wing_upper_mesh.stl';
+stlLower = 'wing_lower_mesh.stl';
 wgsFile  = 'wing_upper_lower.wgs';
 
 %% ----------------------------------------------------------------------
@@ -228,6 +217,11 @@ if doVTK
     geom.MeshWriter.toVTK({meshUpper, meshLower}, vtkFile, 'IncludeNormals', true);
 end
 
+if doSTL
+    geom.MeshWriter.toSTL(meshUpper, stlUpper);
+    geom.MeshWriter.toSTL(meshLower, stlLower);
+end
+
 if doWGS
     netUpper = geom.MeshWriter.meshToNetwork(meshUpper, 'WingUpper', 0, 0);
     netLower = geom.MeshWriter.meshToNetwork(meshLower, 'WingLower', 0, 0);
@@ -270,10 +264,9 @@ function section = buildAirfoilSectionLocal(filename, pFit, fitMethod)
         Clo_raw = Ca;
     end
 
-    % Orient both as LE -> TE
     section.full  = Cfull;
-    section.upper = Cup_raw.reverse();
-    section.lower = Clo_raw;
+    section.upper = Cup_raw.reverse(); % LE -> TE
+    section.lower = Clo_raw;           % LE -> TE
     section.LE    = LE;
 end
 

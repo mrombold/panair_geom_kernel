@@ -18,12 +18,6 @@ classdef MeshWriter
 %   X, Y, Z           [nRows x nCols]
 %   name              (optional)
 %   iSymX, iSymZ      (optional)
-%
-% Notes:
-%   - For trimmed meshes with NaN-masked nodes, VTK/STL skip cells that
-%     touch invalid nodes.
-%   - WGS export requires a full structured network with finite coordinates.
-%   - Degenerate quads are acceptable for WGS; STL skips zero-area triangles.
 
     methods (Static)
         %% ==============================================================
@@ -414,8 +408,10 @@ classdef MeshWriter
         end
 
         function [pts, quads, nrms, has_normals] = meshToValidQuadSoup(mesh, offset0)
-            % Keep all points so structured indexing stays simple.
-            % Skip quads that touch non-finite nodes.
+            % IMPORTANT:
+            % pts = [X(:), Y(:), Z(:)] uses MATLAB column-major ordering.
+            % For an [nu x nv] array, linear index is:
+            %   idx(i,j) = i + (j-1)*nu
 
             pts = [mesh.X(:), mesh.Y(:), mesh.Z(:)];
 
@@ -428,14 +424,14 @@ classdef MeshWriter
             end
 
             quads = zeros(0,4);
-            nv = mesh.nv;
+            nu = mesh.nu;
 
             for i = 1:mesh.nu-1
                 for j = 1:mesh.nv-1
-                    id1 = (i-1) * nv + j;
-                    id2 = i     * nv + j;
-                    id3 = i     * nv + j + 1;
-                    id4 = (i-1) * nv + j + 1;
+                    id1 = i     + (j-1) * nu;
+                    id2 = i + 1 + (j-1) * nu;
+                    id3 = i + 1 +  j    * nu;
+                    id4 = i     +  j    * nu;
 
                     V = pts([id1 id2 id3 id4], :);
                     if any(~isfinite(V(:)))
