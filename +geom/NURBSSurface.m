@@ -18,6 +18,8 @@ classdef NURBSSurface < handle
 %   - loft / skinning with compatible knot merging
 %   - surface of revolution
 %   - swept surface
+%   - trimmed-surface support in UV parameter space
+%   - network compatibility helpers
 
     properties
         P
@@ -26,6 +28,22 @@ classdef NURBSSurface < handle
         V
         p
         q
+
+        % Trim support:
+        % trimOuterLoops / trimInnerLoops are cell arrays of loops.
+        % Each loop is one of:
+        %   - Nx2 numeric UV polyline (closed or open, auto-closed)
+        %   - geom.NURBSCurve living in UV plane (z ignored)
+        %
+        % Semantics:
+        %   - If trimOuterLoops is empty, the full param domain is active.
+        %   - If trimOuterLoops is nonempty, a point must lie inside at least
+        %     one outer loop to be kept.
+        %   - If trimInnerLoops is nonempty, a point inside any inner loop
+        %     is excluded.
+        trimOuterLoops = {}
+        trimInnerLoops = {}
+        trimTolerance = 1e-10
     end
 
     properties (Dependent)
@@ -190,6 +208,136 @@ classdef NURBSSurface < handle
                 end
 
                 C(k,:) = Sw(1:3) / Sw(4);
+            end
+        end
+
+        function C = evaluateTrimmed(obj, u, v)
+        % Evaluate only if (u,v) lies inside the active trimmed region.
+            if ~obj.isInsideTrim(u, v)
+                error('NURBSSurface:evaluateTrimmed', ...
+                    'Requested parameter point lies outside trimmed region.');
+            end
+            C = obj.evaluate(u, v);
+        end
+
+        function tf = isTrimmed(obj)
+            tf = ~isempty(obj.trimOuterLoops) || ~isempty(obj.trimInnerLoops);
+        end
+
+        function obj2 = clearTrims(obj)
+            obj2 = obj.copySurfaceOnly();
+            obj2.trimOuterLoops = {};
+            obj2.trimInnerLoops = {};
+            obj2.trimTolerance = obj.trimTolerance;
+        end
+
+        function obj2 = setTrims(obj, outerLoops, innerLoops)
+            if nargin < 2 || isempty(outerLoops), outerLoops = {}; end
+            if nargin < 3 || isempty(innerLoops), innerLoops = {}; end
+
+            obj2 = obj.copySurfaceOnly();
+            obj2.trimOuterLoops = geom.NURBSSurface.normalizeTrimLoopSet(outerLoops);
+            obj2.trimInnerLoops = geom.NURBSSurface.normalizeTrimLoopSet(innerLoops);
+            obj2.trimTolerance = obj.trimTolerance;
+        end
+
+        function obj2 = addOuterTrimLoop(obj, loop)
+            obj2 = obj.copySurfaceOnly();
+            obj2.trimOuterLoops = [obj.trimOuterLoops, ...
+                geom.NURBSSurface.normalizeTrimLoopSet({loop})];
+            obj2.trimInnerLoops = obj.trimInnerLoops;
+            obj2.trimTolerance = obj.trimTolerance;
+        end
+
+        function obj2 = addInnerTrimLoop(obj, loop)
+            obj2 = obj.copySurfaceOnly();
+            obj2.trimOuterLoops = obj.trimOuterLoops;
+            obj2.trimInnerLoops = [obj.trimInnerLoops, ...
+                geom.NURBSSurface.normalizeTrimLoopSet({loop})];
+            obj2.trimTolerance = obj.trimTolerance;
+        end
+
+        function tf = isInsideTrim(obj, u, v)
+        % True if (u,v) lies in the active kept region of the trimmed surface.
+            u = obj.clampU(u);
+            v = obj.clampV(v);
+
+            tol = obj.trimTolerance;
+            if ~obj.isTrimmed()
+                tf = true;
+                return;
+            end
+
+            % Outer logic
+            if isempty(obj.trimOuterLoops)
+                insideOuter = true;
+            else
+                insideOuter = false;
+                for k = 1:numel(obj.trimOuterLoops)
+                    loop = obj.trimOuterLoops{k};
+                    if geom.NURBSSurface.pointInPolygon2D(loop, [u v], tol)
+                        insideOuter = true;
+                        break;
+                    end
+                end
+            end
+
+            if ~insideOuter
+                tf = false;
+                return;
+            end
+
+            % Inner holes
+            insideInner = false;
+            for k = 1:numel(obj.trimInnerLoops)
+                loop = obj.trimInnerLoops{k};
+                if geom.NURBSSurface.pointInPolygon2D(loop, [u v], tol)
+                    insideInner = true;
+                    break;
+                end
+            end
+
+            tf = ~insideInner;
+        end
+
+        function mask = trimMask(obj, uGrid, vGrid)
+            if ~isequal(size(uGrid), size(vGrid))
+                error('NURBSSurface:trimMask', 'uGrid and vGrid must have same size.');
+            end
+            mask = false(size(uGrid));
+            for i = 1:size(uGrid,1)
+                for j = 1:size(uGrid,2)
+                    mask(i,j) = obj.isInsideTrim(uGrid(i,j), vGrid(i,j));
+                end
+            end
+        end
+
+        function UV = sampleTrimLoops(obj, nPerLoop)
+            if nargin < 2 || isempty(nPerLoop), nPerLoop = 120; end
+            UV.outer = cell(size(obj.trimOuterLoops));
+            UV.inner = cell(size(obj.trimInnerLoops));
+
+            for k = 1:numel(obj.trimOuterLoops)
+                UV.outer{k} = geom.NURBSSurface.resampleTrimLoop(obj.trimOuterLoops{k}, nPerLoop);
+            end
+            for k = 1:numel(obj.trimInnerLoops)
+                UV.inner{k} = geom.NURBSSurface.resampleTrimLoop(obj.trimInnerLoops{k}, nPerLoop);
+            end
+        end
+
+        function XYZ = sampleTrimLoopsXYZ(obj, nPerLoop)
+            if nargin < 2 || isempty(nPerLoop), nPerLoop = 120; end
+            UV = obj.sampleTrimLoops(nPerLoop);
+            XYZ.outer = cell(size(UV.outer));
+            XYZ.inner = cell(size(UV.inner));
+
+            for k = 1:numel(UV.outer)
+                uv = UV.outer{k};
+                XYZ.outer{k} = obj.evaluate(uv(:,1), uv(:,2));
+            end
+            for k = 1:numel(UV.inner)
+                uv = UV.inner{k};
+                XYZ.inner{k} = obj.evaluate(uv(:,1), uv(:,2));
             end
         end
 
@@ -442,6 +590,7 @@ classdef NURBSSurface < handle
             pa = inputParser;
             addParameter(pa, 'SpacingU', 'uniform');
             addParameter(pa, 'SpacingV', 'uniform');
+            addParameter(pa, 'RespectTrim', true);
             parse(pa, varargin{:});
             opts = pa.Results;
 
@@ -465,10 +614,27 @@ classdef NURBSSurface < handle
             mesh.u = mesh.u.';
             mesh.v = mesh.v.';
 
+            if opts.RespectTrim && obj.isTrimmed()
+                mesh.trimMask = obj.trimMask(mesh.u, mesh.v);
+                X = mesh.X; Y = mesh.Y; Z = mesh.Z;
+                X(~mesh.trimMask) = NaN;
+                Y(~mesh.trimMask) = NaN;
+                Z(~mesh.trimMask) = NaN;
+                mesh.X = X;
+                mesh.Y = Y;
+                mesh.Z = Z;
+            else
+                mesh.trimMask = true(size(mesh.u));
+            end
+
             Normals = zeros(nu, nv, 3);
             for i = 1:nu
                 for j = 1:nv
-                    Normals(i, j, :) = obj.normal(u_iso(i), v_iso(j));
+                    if mesh.trimMask(i,j)
+                        Normals(i, j, :) = obj.normal(u_iso(i), v_iso(j));
+                    else
+                        Normals(i, j, :) = [NaN NaN NaN];
+                    end
                 end
             end
             mesh.normals = Normals;
@@ -553,6 +719,9 @@ classdef NURBSSurface < handle
             end
 
             S2 = geom.NURBSSurface(P2, obj.p, obj.q, U2, V2, W2);
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance = obj.trimTolerance;
         end
 
         function S2 = flipNormals(obj)
@@ -560,6 +729,9 @@ classdef NURBSSurface < handle
             W2 = flipud(obj.W);
             U2 = (obj.U(1) + obj.U(end)) - fliplr(obj.U);
             S2 = geom.NURBSSurface(P2, obj.p, obj.q, U2, obj.V, W2);
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance = obj.trimTolerance;
         end
 
         function [S_lo, S_hi] = splitU(obj, u0)
@@ -604,6 +776,18 @@ classdef NURBSSurface < handle
 
             S_lo = geom.NURBSSurface(P_lo, obj.p, obj.q, U_lo, obj.V, W_lo);
             S_hi = geom.NURBSSurface(P_hi, obj.p, obj.q, U_hi, obj.V, W_hi);
+
+            if obj.isTrimmed()
+                [outerLo, outerHi] = geom.NURBSSurface.splitTrimLoopsU(obj.trimOuterLoops, u0);
+                [innerLo, innerHi] = geom.NURBSSurface.splitTrimLoopsU(obj.trimInnerLoops, u0);
+
+                S_lo.trimOuterLoops = outerLo;
+                S_lo.trimInnerLoops = innerLo;
+                S_hi.trimOuterLoops = outerHi;
+                S_hi.trimInnerLoops = innerHi;
+                S_lo.trimTolerance = obj.trimTolerance;
+                S_hi.trimTolerance = obj.trimTolerance;
+            end
         end
 
         function [S_lo, S_hi] = splitV(obj, v0)
@@ -611,6 +795,13 @@ classdef NURBSSurface < handle
             [A, B] = St.splitU(v0);
             S_lo = A.swapUV();
             S_hi = B.swapUV();
+
+            S_lo.trimOuterLoops = obj.trimOuterLoops;
+            S_lo.trimInnerLoops = obj.trimInnerLoops;
+            S_hi.trimOuterLoops = obj.trimOuterLoops;
+            S_hi.trimInnerLoops = obj.trimInnerLoops;
+            S_lo.trimTolerance = obj.trimTolerance;
+            S_hi.trimTolerance = obj.trimTolerance;
         end
 
         function C = isoCurveU(obj, v0)
@@ -719,6 +910,9 @@ classdef NURBSSurface < handle
             P2 = permute(obj.P, [2 1 3]);
             W2 = obj.W.';
             St = geom.NURBSSurface(P2, obj.q, obj.p, obj.V, obj.U, W2);
+            St.trimOuterLoops = obj.trimOuterLoops;
+            St.trimInnerLoops = obj.trimInnerLoops;
+            St.trimTolerance = obj.trimTolerance;
         end
 
         function patches = decomposeBezier(obj)
@@ -774,7 +968,7 @@ classdef NURBSSurface < handle
                 error('NURBSSurface:elevateU', 't must be a nonnegative integer.');
             end
             if t == 0
-                S2 = geom.NURBSSurface(obj.P, obj.p, obj.q, obj.U, obj.V, obj.W);
+                S2 = obj.copySurfaceOnly();
                 return;
             end
 
@@ -792,6 +986,9 @@ classdef NURBSSurface < handle
             end
 
             S2 = geom.NURBSSurface(P2, obj.p + t, obj.q, U2, obj.V, W2);
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance = obj.trimTolerance;
         end
 
         function S2 = elevateV(obj, t)
@@ -800,7 +997,7 @@ classdef NURBSSurface < handle
                 error('NURBSSurface:elevateV', 't must be a nonnegative integer.');
             end
             if t == 0
-                S2 = geom.NURBSSurface(obj.P, obj.p, obj.q, obj.U, obj.V, obj.W);
+                S2 = obj.copySurfaceOnly();
                 return;
             end
 
@@ -818,6 +1015,9 @@ classdef NURBSSurface < handle
             end
 
             S2 = geom.NURBSSurface(P2, obj.p, obj.q + t, obj.U, V2, W2);
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance = obj.trimTolerance;
         end
 
         function [S2, maxErr] = reduceDegreeU(obj, numTimes, tol, nSample)
@@ -851,6 +1051,9 @@ classdef NURBSSurface < handle
             end
 
             S2 = Scur;
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance = obj.trimTolerance;
         end
 
         function [S2, maxErr] = reduceDegreeV(obj, numTimes, tol, nSample)
@@ -884,6 +1087,9 @@ classdef NURBSSurface < handle
             end
 
             S2 = Scur;
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance = obj.trimTolerance;
         end
 
         function [S2, removed, maxErr] = removeKnotU(obj, u, numRemove, tol, nSample)
@@ -915,6 +1121,9 @@ classdef NURBSSurface < handle
             end
 
             S2 = geom.NURBSSurface(P2, Scur.p, Scur.q, U2, Scur.V, W2);
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance = obj.trimTolerance;
         end
 
         function [S2, removed, maxErr] = removeKnotV(obj, v, numRemove, tol, nSample)
@@ -946,6 +1155,9 @@ classdef NURBSSurface < handle
             end
 
             S2 = geom.NURBSSurface(P2, Scur.p, Scur.q, Scur.U, V2, W2);
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance = obj.trimTolerance;
         end
     end
 
@@ -957,13 +1169,14 @@ classdef NURBSSurface < handle
             pa = inputParser;
             addParameter(pa, 'ShowCP', false);
             addParameter(pa, 'ShowIso', false);
+            addParameter(pa, 'ShowTrims', true);
             addParameter(pa, 'Alpha', 0.85);
             addParameter(pa, 'EdgeAlpha', 0.2);
             addParameter(pa, 'FaceColor', [0.3 0.6 0.9]);
             parse(pa, varargin{:});
             opts = pa.Results;
 
-            mesh = obj.isoMesh(nu, nv);
+            mesh = obj.isoMesh(nu, nv, 'RespectTrim', true);
             surf(mesh.X, mesh.Y, mesh.Z, ...
                 'FaceColor', opts.FaceColor, ...
                 'FaceAlpha', opts.Alpha, ...
@@ -1002,6 +1215,20 @@ classdef NURBSSurface < handle
                     'MarkerSize', 4, 'MarkerFaceColor', 'w', 'Color', [0.3 0.3 0.3]);
             end
 
+            if opts.ShowTrims && obj.isTrimmed()
+                T = obj.sampleTrimLoopsXYZ(160);
+                for k = 1:numel(T.outer)
+                    xyz = T.outer{k};
+                    plot3(xyz(:,1), xyz(:,2), xyz(:,3), '-', ...
+                        'Color', [0.9 0.1 0.1], 'LineWidth', 2.0);
+                end
+                for k = 1:numel(T.inner)
+                    xyz = T.inner{k};
+                    plot3(xyz(:,1), xyz(:,2), xyz(:,3), '-', ...
+                        'Color', [0.1 0.1 0.9], 'LineWidth', 2.0);
+                end
+            end
+
             axis equal;
             grid on;
             lighting phong;
@@ -1015,12 +1242,45 @@ classdef NURBSSurface < handle
             if nargin < 3, nv = 8; end
             if nargin < 4, scale = 0.05; end
 
-            mesh = obj.isoMesh(nu, nv);
+            mesh = obj.isoMesh(nu, nv, 'RespectTrim', true);
             quiver3(mesh.X, mesh.Y, mesh.Z, ...
                 scale * mesh.normals(:,:,1), ...
                 scale * mesh.normals(:,:,2), ...
                 scale * mesh.normals(:,:,3), ...
                 0, 'b');
+        end
+
+        function plotTrimUV(obj, nPerLoop)
+            if nargin < 2 || isempty(nPerLoop), nPerLoop = 160; end
+            UV = obj.sampleTrimLoops(nPerLoop);
+            hold on; grid on; axis equal;
+            xlabel('u'); ylabel('v');
+            xlim(obj.domainU);
+            ylim(obj.domainV);
+
+            rectangle('Position', [obj.domainU(1), obj.domainV(1), ...
+                                   obj.domainU(2)-obj.domainU(1), ...
+                                   obj.domainV(2)-obj.domainV(1)], ...
+                      'EdgeColor', [0.5 0.5 0.5], 'LineStyle', '--');
+
+            for k = 1:numel(UV.outer)
+                uv = UV.outer{k};
+                plot(uv(:,1), uv(:,2), 'r-', 'LineWidth', 2.0);
+            end
+            for k = 1:numel(UV.inner)
+                uv = UV.inner{k};
+                plot(uv(:,1), uv(:,2), 'b-', 'LineWidth', 2.0);
+            end
+            title('Trim loops in UV space');
+        end
+    end
+
+    methods
+        function obj2 = copySurfaceOnly(obj)
+            obj2 = geom.NURBSSurface(obj.P, obj.p, obj.q, obj.U, obj.V, obj.W);
+            obj2.trimOuterLoops = obj.trimOuterLoops;
+            obj2.trimInnerLoops = obj.trimInnerLoops;
+            obj2.trimTolerance = obj.trimTolerance;
         end
     end
 
@@ -1085,6 +1345,134 @@ classdef NURBSSurface < handle
                 U = zeros(size(U));
             else
                 U = (U - a) / (b - a);
+            end
+        end
+
+        function loops = normalizeTrimLoopSet(loopsIn)
+            if isempty(loopsIn)
+                loops = {};
+                return;
+            end
+            if ~iscell(loopsIn)
+                loopsIn = {loopsIn};
+            end
+            loops = cell(size(loopsIn));
+            for k = 1:numel(loopsIn)
+                loops{k} = geom.NURBSSurface.loopToPolylineUV(loopsIn{k}, 200);
+            end
+        end
+
+        function uv = loopToPolylineUV(loop, nSamp)
+            if nargin < 2 || isempty(nSamp), nSamp = 200; end
+
+            if isa(loop, 'geom.NURBSCurve')
+                u = linspace(loop.domain(1), loop.domain(2), nSamp);
+                xyz = loop.evaluate(u);
+                uv = xyz(:,1:2);
+            elseif isnumeric(loop) && size(loop,2) == 2
+                uv = loop;
+            else
+                error('NURBSSurface:loopToPolylineUV', ...
+                    'Trim loop must be Nx2 numeric or geom.NURBSCurve in UV plane.');
+            end
+
+            if size(uv,1) < 3
+                error('NURBSSurface:loopToPolylineUV', ...
+                    'Trim loop needs at least 3 points.');
+            end
+
+            if norm(uv(1,:) - uv(end,:)) > 1e-12
+                uv = [uv; uv(1,:)];
+            end
+        end
+
+        function tf = pointInPolygon2D(poly, pt, tol)
+            if nargin < 3 || isempty(tol), tol = 1e-10; end
+            x = pt(1);
+            y = pt(2);
+            xv = poly(:,1);
+            yv = poly(:,2);
+
+            % Boundary check
+            for i = 1:size(poly,1)-1
+                a = poly(i,:);
+                b = poly(i+1,:);
+                if geom.NURBSSurface.pointOnSegment2D(pt, a, b, tol)
+                    tf = true;
+                    return;
+                end
+            end
+
+            tf = inpolygon(x, y, xv, yv);
+        end
+
+        function tf = pointOnSegment2D(p, a, b, tol)
+            ap = p - a;
+            ab = b - a;
+            lab2 = dot(ab, ab);
+            if lab2 < eps
+                tf = norm(ap) <= tol;
+                return;
+            end
+            t = dot(ap, ab) / lab2;
+            if t < -tol || t > 1+tol
+                tf = false;
+                return;
+            end
+            proj = a + min(max(t,0),1) * ab;
+            tf = norm(p - proj) <= tol;
+        end
+
+        function uv = resampleTrimLoop(loop, nPerLoop)
+            if isa(loop, 'geom.NURBSCurve')
+                us = linspace(loop.domain(1), loop.domain(2), nPerLoop);
+                xyz = loop.evaluate(us);
+                uv = xyz(:,1:2);
+                if norm(uv(1,:) - uv(end,:)) > 1e-12
+                    uv = [uv; uv(1,:)];
+                end
+            else
+                uv0 = geom.NURBSSurface.loopToPolylineUV(loop, nPerLoop);
+                d = [0; cumsum(vecnorm(diff(uv0,1,1),2,2))];
+                if d(end) < eps
+                    uv = uv0;
+                    return;
+                end
+                s = linspace(0, d(end), nPerLoop).';
+                uv = [interp1(d, uv0(:,1), s, 'linear'), ...
+                      interp1(d, uv0(:,2), s, 'linear')];
+                if norm(uv(1,:) - uv(end,:)) > 1e-12
+                    uv = [uv; uv(1,:)];
+                end
+            end
+        end
+
+        function [leftLoops, rightLoops] = splitTrimLoopsU(loops, u0)
+            % Practical placeholder: preserve loops on both children by
+            % renormalizing coordinates. This is conservative and useful for
+            % demos / masking, though it is not a full topological trim split.
+            leftLoops = {};
+            rightLoops = {};
+            for k = 1:numel(loops)
+                uv = loops{k};
+                uvL = uv;
+                uvR = uv;
+                uvL(:,1) = min(uvL(:,1), u0);
+                uvR(:,1) = max(uvR(:,1), u0);
+
+                % map to [0,1]
+                if u0 > 0
+                    uvL(:,1) = uvL(:,1) / u0;
+                else
+                    uvL(:,1) = 0;
+                end
+                if (1-u0) > 0
+                    uvR(:,1) = (uvR(:,1) - u0) / (1-u0);
+                else
+                    uvR(:,1) = 0;
+                end
+                leftLoops{end+1} = uvL; %#ok<AGROW>
+                rightLoops{end+1} = uvR; %#ok<AGROW>
             end
         end
 
@@ -1196,7 +1584,6 @@ classdef NURBSSurface < handle
         end
 
         function [curvesOut, pmax, Uunion] = makeCompatibleCurves(curves)
-        % Elevate/refine a set of curves to common degree and knot vector.
             if ~iscell(curves), curves = {curves}; end
             if isempty(curves)
                 error('NURBSSurface:makeCompatibleCurves', 'Need at least one curve.');
@@ -1217,7 +1604,6 @@ classdef NURBSSurface < handle
             end
             Uunion = sort(Uunion(:).');
 
-            % insert missing multiplicities
             for val = Uunion
                 multTarget = max(cellfun(@(c) sum(abs(c.U - val) < 1e-12), curvesOut));
                 for k = 1:numel(curvesOut)
@@ -1229,6 +1615,28 @@ classdef NURBSSurface < handle
             end
 
             Uunion = curvesOut{1}.U;
+        end
+
+        function [profilesC, guidesC, uPar, vPar] = makeCompatibleNetwork(profileCurves, guideCurves)
+        % Practical compatibility helper for rectangular curve networks.
+        %
+        % Returns:
+        %   profilesC : compatible profile curves
+        %   guidesC   : compatible guide curves
+        %   uPar      : normalized guide stations
+        %   vPar      : normalized profile stations
+            if ~iscell(profileCurves), profileCurves = {profileCurves}; end
+            if ~iscell(guideCurves), guideCurves = {guideCurves}; end
+            if isempty(profileCurves) || isempty(guideCurves)
+                error('NURBSSurface:makeCompatibleNetwork', ...
+                    'Need profile and guide curves.');
+            end
+
+            [profilesC, ~, ~] = geom.NURBSSurface.makeCompatibleCurves(profileCurves);
+            [guidesC, ~, ~] = geom.NURBSSurface.makeCompatibleCurves(guideCurves);
+
+            uPar = linspace(0,1,numel(guideCurves)).';
+            vPar = linspace(0,1,numel(profileCurves)).';
         end
 
         function v = sectionParameters(curves, method)
@@ -1245,15 +1653,6 @@ classdef NURBSSurface < handle
         end
 
         function S = loft(curves, q, method, sectionParams)
-        % Exact skinning / lofting of compatible section curves.
-        %
-        % curves: cell array of NURBSCurve section curves
-        % q     : loft degree
-        % method: parameterization method for section direction
-        %
-        % The section curves are elevated/refined to compatibility, then the
-        % control net is interpolated in homogeneous space through sections.
-
             if nargin < 2 || isempty(q), q = 3; end
             if nargin < 3 || isempty(method), method = 'centripetal'; end
             if ~iscell(curves), curves = {curves}; end
@@ -1281,7 +1680,6 @@ classdef NURBSSurface < handle
 
             V = geom.NURBSCurve.averagingKnotVector(vpar, q);
 
-            % Basis matrix in section direction
             A = zeros(nsec, nsec);
             nV = nsec - 1;
             for r = 1:nsec
@@ -1315,21 +1713,11 @@ classdef NURBSSurface < handle
         end
 
         function S = coons(Cu0, Cu1, Cv0, Cv1, p, q, nu, nv)
-        % Coons patch from four boundary curves using
-        % S(u,v) = Su(u,v) + Sv(u,v) - Sbilinear(u,v)
-        %
-        % Cu0, Cu1: curves along u at v=0 and v=1
-        % Cv0, Cv1: curves along v at u=0 and u=1
-        %
-        % Practical kernel implementation: evaluate transfinite blend on a
-        % rectangular grid, then interpolate as a tensor-product NURBS surface.
-
             if nargin < 5 || isempty(p), p = 3; end
             if nargin < 6 || isempty(q), q = 3; end
             if nargin < 7 || isempty(nu), nu = 21; end
             if nargin < 8 || isempty(nv), nv = 21; end
 
-            % Corner consistency
             P00 = Cu0.evaluate(Cu0.domain(1));
             P10 = Cu0.evaluate(Cu0.domain(2));
             P01 = Cu1.evaluate(Cu1.domain(1));
@@ -1363,7 +1751,6 @@ classdef NURBSSurface < handle
 
                     Suv = (1-v) * Pu0 + v * Pu1;
                     Svv = (1-u) * Pv0 + u * Pv1;
-
                     Sbil = (1-u)*(1-v)*P00 + u*(1-v)*P10 + (1-u)*v*P01 + u*v*P11;
 
                     Q(i,j,:) = Suv + Svv - Sbil;
@@ -1374,15 +1761,6 @@ classdef NURBSSurface < handle
         end
 
         function S = gordon(profileCurves, guideCurves, p, q, nu, nv)
-        % Gordon surface from a network of profile and guide curves.
-        %
-        % Practical kernel implementation:
-        %   1) loft profile curves
-        %   2) loft guide curves, then swap UV
-        %   3) build an intersection-net surface from sampled intersections
-        %   4) combine sampled surfaces as S = Sp + Sg - Si
-        %   5) interpolate resulting rectangular net
-
             if nargin < 3 || isempty(p), p = 3; end
             if nargin < 4 || isempty(q), q = 3; end
             if nargin < 5 || isempty(nu), nu = 25; end
@@ -1398,7 +1776,6 @@ classdef NURBSSurface < handle
             Sp = geom.NURBSSurface.loft(profileCurves, q, 'centripetal');
             Sg = geom.NURBSSurface.loft(guideCurves, p, 'centripetal').swapUV();
 
-            % Build intersection net by sampling each profile at guide stations
             vp = linspace(0,1,numel(profileCurves));
             ug = linspace(0,1,numel(guideCurves));
             X = zeros(numel(ug), numel(vp), 3);
@@ -1427,11 +1804,55 @@ classdef NURBSSurface < handle
             S = geom.NURBSSurface.globalInterpNet(Q, p, q, 'chord', 'chord');
         end
 
-        function S = revolve(C, axisPoint, axisDir, thetaTotal, q, nSections)
-        % Surface of revolution from a profile curve.
+        function S = multiGordon(profileFamilies, guideFamilies, weights, p, q, nu, nv)
+        % Higher-order multi-network blending variant.
         %
-        % Practical kernel implementation by rotating section curves and lofting.
+        % profileFamilies, guideFamilies are cell arrays of curve-network
+        % pairs. Each pair is blended Gordon-style, then combined with weights.
+            if nargin < 3 || isempty(weights)
+                weights = ones(numel(profileFamilies),1);
+            end
+            if nargin < 4 || isempty(p), p = 3; end
+            if nargin < 5 || isempty(q), q = 3; end
+            if nargin < 6 || isempty(nu), nu = 25; end
+            if nargin < 7 || isempty(nv), nv = 25; end
 
+            weights = weights(:);
+            nfam = numel(profileFamilies);
+            if numel(guideFamilies) ~= nfam || numel(weights) ~= nfam
+                error('NURBSSurface:multiGordon', ...
+                    'Families and weights must have matching lengths.');
+            end
+
+            Sfam = cell(nfam,1);
+            for k = 1:nfam
+                Sfam{k} = geom.NURBSSurface.gordon( ...
+                    profileFamilies{k}, guideFamilies{k}, p, q, nu, nv);
+            end
+
+            ug = linspace(0,1,nu);
+            vg = linspace(0,1,nv);
+            Q = zeros(nu, nv, 3);
+
+            ws = sum(weights);
+            if abs(ws) < eps
+                error('NURBSSurface:multiGordon', 'Weights sum to zero.');
+            end
+
+            for i = 1:nu
+                for j = 1:nv
+                    acc = zeros(1,3);
+                    for k = 1:nfam
+                        acc = acc + weights(k) * Sfam{k}.evaluate(ug(i), vg(j));
+                    end
+                    Q(i,j,:) = acc / ws;
+                end
+            end
+
+            S = geom.NURBSSurface.globalInterpNet(Q, p, q, 'chord', 'chord');
+        end
+
+        function S = revolve(C, axisPoint, axisDir, thetaTotal, q, nSections)
             if nargin < 4 || isempty(thetaTotal), thetaTotal = 2*pi; end
             if nargin < 5 || isempty(q), q = 3; end
             if nargin < 6 || isempty(nSections), nSections = 9; end
@@ -1452,12 +1873,6 @@ classdef NURBSSurface < handle
         end
 
         function S = sweep(profileCurve, spineCurve, q, nStations, upVec)
-        % General sweep of a profile along a spine.
-        %
-        % The profile is assumed to live in its own local YZ-plane, with the
-        % sweep direction mapped to the spine tangent and the profile plane
-        % carried by a frame built from tangent + reference up vector.
-
             if nargin < 3 || isempty(q), q = 3; end
             if nargin < 4 || isempty(nStations), nStations = 9; end
             if nargin < 5 || isempty(upVec), upVec = [0 0 1]; end
@@ -1486,10 +1901,6 @@ classdef NURBSSurface < handle
                 N0 = cross(B0, T0);
                 N0 = N0 / norm(N0);
 
-                % Map local profile frame:
-                % local x -> tangent
-                % local y -> normal
-                % local z -> binormal
                 R = [T0(:), N0(:), B0(:)];
                 H = eye(4);
                 H(1:3,1:3) = R;

@@ -1,27 +1,30 @@
 %% DEMO_NURBS_SURFACE_KERNEL.m
-% Comprehensive demonstration / validation script for the NURBS surface kernel.
+% Comprehensive demo / validation for the NURBS surface kernel.
 %
-% Exercises:
-%   1.  Construction / validation
+% Sections:
+%   1.  Base surface construction / validation
 %   2.  Evaluation / derivatives / normal / curvature
-%   3.  Iso-mesh / plotting / normals
-%   4.  Closest-point projection
-%   5.  Iso-curves
-%   6.  Refinement
-%   7.  SplitU / SplitV
-%   8.  Subpatch extraction
-%   9.  Bezier patch decomposition
-%  10.  Degree elevation / reduction
-%  11.  Knot removal
-%  12.  Global interpolation of rectangular net
-%  13.  Global least-squares fit of rectangular net
-%  14.  Ruled surface constructor
-%  15.  Bilinear patch constructor
-%  16.  Loft / skinning
-%  17.  Coons patch
-%  18.  Gordon surface
+%   3.  Iso-mesh / normals / closest point
+%   4.  Iso-curves
+%   5.  Refinement
+%   6.  SplitU / SplitV
+%   7.  Subpatch extraction
+%   8.  Bezier patch decomposition
+%   9.  Degree elevation / reduction
+%  10.  Knot removal
+%  11.  Rectangular interpolation
+%  12.  Rectangular LSQ fit
+%  13.  Ruled surface
+%  14.  Bilinear patch
+%  15.  Loft / skinning
+%  16.  Coons patch
+%  17.  Gordon surface
+%  18.  Multi-Gordon blend
 %  19.  Surface of revolution
 %  20.  Swept surface
+%  21.  Trimmed surface: UV loops / inside-outside logic
+%  22.  Trimmed evaluation / trim mask
+%  23.  Trim-preserving edits smoke test
 
 clear; close all; clc;
 
@@ -41,9 +44,9 @@ end
 fprintf('geom package found at: %s\n', script_dir);
 
 %% ======================================================================
-%  1. CONSTRUCTION / VALIDATION
+%  1. BASE SURFACE CONSTRUCTION / VALIDATION
 %% ======================================================================
-fprintf('\n--- 1. Construction / validation ---\n');
+fprintf('\n--- 1. Base surface construction / validation ---\n');
 
 P = zeros(4,4,3);
 xu = [0.0 1.0 2.2 3.2];
@@ -65,6 +68,11 @@ fprintf('  size(P) = [%d x %d x %d]\n', size(S.P,1), size(S.P,2), size(S.P,3));
 fprintf('  validate() = %d\n', S.validate());
 fprintf('  domainU = [%.3f %.3f]\n', S.domainU(1), S.domainU(2));
 fprintf('  domainV = [%.3f %.3f]\n', S.domainV(1), S.domainV(2));
+
+fig1 = figure('Name','1 - Base surface');
+S.plot(24, 24, 'ShowCP', true, 'ShowIso', true);
+title('Base surface');
+view(3);
 
 %% ======================================================================
 %  2. EVALUATION / DERIVATIVES / NORMAL / CURVATURE
@@ -95,19 +103,14 @@ catch ME
 end
 
 %% ======================================================================
-%  3. ISO-MESH / PLOT / NORMALS
+%  3. ISO-MESH / NORMALS / CLOSEST POINT
 %% ======================================================================
-fprintf('\n--- 3. Iso-mesh / plot / normals ---\n');
+fprintf('\n--- 3. Iso-mesh / normals / closest point ---\n');
 
 try
     mesh = S.isoMesh(20, 20);
     fprintf('  mesh size = %d x %d\n', mesh.nu, mesh.nv);
     fprintf('  # quads   = %d\n', size(mesh.connectivity,1));
-
-    fig1 = figure('Name','1 - Base surface');
-    S.plot(24, 24, 'ShowCP', true, 'ShowIso', true);
-    title('Base NURBS surface');
-    view(3);
 
     fig2 = figure('Name','2 - Surface normals');
     S.plot(18, 18, 'ShowCP', false, 'ShowIso', false);
@@ -115,16 +118,7 @@ try
     S.plotNormals(8, 8, 0.18);
     title('Surface normals');
     view(3);
-catch ME
-    fprintf('  Plot / mesh section failed: %s\n', ME.message);
-end
 
-%% ======================================================================
-%  4. CLOSEST POINT
-%% ======================================================================
-fprintf('\n--- 4. Closest-point projection ---\n');
-
-try
     Q = [1.55 1.25 0.55];
     [u_cp, v_cp, Pcp, dcp] = S.closestPoint(Q);
 
@@ -140,13 +134,13 @@ try
     title('Closest-point projection');
     view(3);
 catch ME
-    fprintf('  Closest-point section failed: %s\n', ME.message);
+    fprintf('  Mesh / closest-point section failed: %s\n', ME.message);
 end
 
 %% ======================================================================
-%  5. ISO-CURVES
+%  4. ISO-CURVES
 %% ======================================================================
-fprintf('\n--- 5. Iso-curves ---\n');
+fprintf('\n--- 4. Iso-curves ---\n');
 
 try
     Cu = S.isoCurveU(0.35);
@@ -164,9 +158,9 @@ catch ME
 end
 
 %% ======================================================================
-%  6. REFINEMENT
+%  5. REFINEMENT
 %% ======================================================================
-fprintf('\n--- 6. Refinement ---\n');
+fprintf('\n--- 5. Refinement ---\n');
 
 try
     Sref = S.refine([0.25 0.50 0.75], [0.33 0.66]);
@@ -189,9 +183,9 @@ catch ME
 end
 
 %% ======================================================================
-%  7. SPLITU / SPLITV
+%  6. SPLITU / SPLITV
 %% ======================================================================
-fprintf('\n--- 7. SplitU / SplitV ---\n');
+fprintf('\n--- 6. SplitU / SplitV ---\n');
 
 try
     [Sulo, Suhi] = S.splitU(0.5);
@@ -220,9 +214,9 @@ catch ME
 end
 
 %% ======================================================================
-%  8. SUBPATCH EXTRACTION
+%  7. SUBPATCH EXTRACTION
 %% ======================================================================
-fprintf('\n--- 8. Subpatch extraction ---\n');
+fprintf('\n--- 7. Subpatch extraction ---\n');
 
 try
     Sex = S.extractUV([0.2 0.8], [0.15 0.75]);
@@ -239,9 +233,9 @@ catch ME
 end
 
 %% ======================================================================
-%  9. BEZIER PATCH DECOMPOSITION
+%  8. BEZIER PATCH DECOMPOSITION
 %% ======================================================================
-fprintf('\n--- 9. Bezier patch decomposition ---\n');
+fprintf('\n--- 8. Bezier patch decomposition ---\n');
 
 try
     patches = Sref.decomposeBezier();
@@ -266,9 +260,9 @@ catch ME
 end
 
 %% ======================================================================
-% 10. DEGREE ELEVATION / REDUCTION
+%  9. DEGREE ELEVATION / REDUCTION
 %% ======================================================================
-fprintf('\n--- 10. Degree elevation / reduction ---\n');
+fprintf('\n--- 9. Degree elevation / reduction ---\n');
 
 try
     SeU = S.elevateU(1);
@@ -317,9 +311,9 @@ catch ME
 end
 
 %% ======================================================================
-% 11. KNOT REMOVAL
+% 10. KNOT REMOVAL
 %% ======================================================================
-fprintf('\n--- 11. Knot removal ---\n');
+fprintf('\n--- 10. Knot removal ---\n');
 
 try
     Srm0 = S.refine([0.35 0.35], [0.65 0.65]);
@@ -346,9 +340,9 @@ catch ME
 end
 
 %% ======================================================================
-% 12. GLOBAL INTERPOLATION OF RECTANGULAR NET
+% 11. RECTANGULAR INTERPOLATION
 %% ======================================================================
-fprintf('\n--- 12. Global interpolation of rectangular net ---\n');
+fprintf('\n--- 11. Rectangular interpolation ---\n');
 
 try
     uu = linspace(0, 1, 7);
@@ -380,9 +374,9 @@ catch ME
 end
 
 %% ======================================================================
-% 13. GLOBAL LEAST-SQUARES FIT OF RECTANGULAR NET
+% 12. RECTANGULAR LSQ FIT
 %% ======================================================================
-fprintf('\n--- 13. Global LSQ fit of rectangular net ---\n');
+fprintf('\n--- 12. Rectangular LSQ fit ---\n');
 
 try
     uu = linspace(0, 1, 18);
@@ -414,9 +408,9 @@ catch ME
 end
 
 %% ======================================================================
-% 14. RULED SURFACE
+% 13. RULED SURFACE
 %% ======================================================================
-fprintf('\n--- 14. Ruled surface ---\n');
+fprintf('\n--- 13. Ruled surface ---\n');
 
 try
     cP1 = [0.0 0.0 0.0;
@@ -444,9 +438,9 @@ catch ME
 end
 
 %% ======================================================================
-% 15. BILINEAR PATCH
+% 14. BILINEAR PATCH
 %% ======================================================================
-fprintf('\n--- 15. Bilinear patch ---\n');
+fprintf('\n--- 14. Bilinear patch ---\n');
 
 try
     Sbil = geom.NURBSSurface.bilinearCoons( ...
@@ -463,15 +457,18 @@ catch ME
 end
 
 %% ======================================================================
-% 16. LOFT / SKINNING
+% 15. LOFT / SKINNING
 %% ======================================================================
-fprintf('\n--- 16. Loft / skinning ---\n');
+fprintf('\n--- 15. Loft / skinning ---\n');
 
 try
     c1 = geom.NURBSCurve([0 0 0; 1 0.4 0.1; 2 0.1 0.0; 3 0 0], 3);
     c2 = geom.NURBSCurve([0 0.5 0.6; 1 0.9 0.8; 2 0.8 0.5; 3 0.6 0.3], 3);
     c3 = geom.NURBSCurve([0 1.1 1.0; 1 1.4 1.2; 2 1.5 0.7; 3 1.4 0.4], 3);
     c4 = geom.NURBSCurve([0 1.8 1.2; 1 2.0 1.0; 2 2.2 0.5; 3 2.3 0.2], 3);
+
+    [cc, pmax, Ucommon] = geom.NURBSSurface.makeCompatibleCurves({c1,c2,c3,c4});
+    fprintf('  compatible curves: pmax = %d, knot count = %d\n', pmax, numel(Ucommon)); %#ok<NASGU>
 
     Sloft = geom.NURBSSurface.loft({c1,c2,c3,c4}, 3, 'centripetal');
     fprintf('  loft net size = %d x %d\n', size(Sloft.P,1), size(Sloft.P,2));
@@ -490,9 +487,9 @@ catch ME
 end
 
 %% ======================================================================
-% 17. COONS PATCH
+% 16. COONS PATCH
 %% ======================================================================
-fprintf('\n--- 17. Coons patch ---\n');
+fprintf('\n--- 16. Coons patch ---\n');
 
 try
     Cu0 = geom.NURBSCurve([0 0 0; 1 0.0 0.3; 2 0.0 0.2; 3 0 0], 3);
@@ -517,9 +514,9 @@ catch ME
 end
 
 %% ======================================================================
-% 18. GORDON SURFACE
+% 17. GORDON SURFACE / NETWORK COMPATIBILITY
 %% ======================================================================
-fprintf('\n--- 18. Gordon surface ---\n');
+fprintf('\n--- 17. Gordon surface / network compatibility ---\n');
 
 try
     p1 = geom.NURBSCurve([0 0 0; 1 0.0 0.4; 2 0.0 0.3; 3 0 0], 3);
@@ -531,6 +528,12 @@ try
     g2 = geom.NURBSCurve([1 0.0 0.4; 1 0.8 0.8; 1 1.6 0.7; 1 2.4 0.2], 3);
     g3 = geom.NURBSCurve([2 0.0 0.3; 2 0.8 0.6; 2 1.6 0.9; 2 2.4 0.5], 3);
     g4 = geom.NURBSCurve([3 0.0 0; 3 0.8 0.2; 3 1.6 0.3; 3 2.4 0.1], 3);
+
+    [profilesC, guidesC, uPar, vPar] = geom.NURBSSurface.makeCompatibleNetwork( ...
+        {p1,p2,p3,p4}, {g1,g2,g3,g4});
+    fprintf('  network compatible: %d profiles, %d guides\n', numel(profilesC), numel(guidesC));
+    fprintf('  uPar = %s\n', mat2str(uPar.',3));
+    fprintf('  vPar = %s\n', mat2str(vPar.',3));
 
     Sgordon = geom.NURBSSurface.gordon({p1,p2,p3,p4}, {g1,g2,g3,g4}, 3, 3, 25, 25);
     fprintf('  Gordon net size = %d x %d\n', size(Sgordon.P,1), size(Sgordon.P,2));
@@ -553,6 +556,37 @@ catch ME
 end
 
 %% ======================================================================
+% 18. MULTI-GORDON BLEND
+%% ======================================================================
+fprintf('\n--- 18. Multi-Gordon blend ---\n');
+
+try
+    p1b = geom.NURBSCurve([0 0 0; 1 0.1 0.2; 2 0.0 0.4; 3 0 0.1], 3);
+    p2b = geom.NURBSCurve([0 0.8 0.1; 1 0.8 0.5; 2 0.8 0.7; 3 0.8 0.3], 3);
+    p3b = geom.NURBSCurve([0 1.6 0.2; 1 1.6 0.4; 2 1.6 0.8; 3 1.6 0.2], 3);
+    p4b = geom.NURBSCurve([0 2.4 0.1; 1 2.4 0.2; 2 2.4 0.4; 3 2.4 0.0], 3);
+
+    g1b = geom.NURBSCurve([0 0 0; 0 0.8 0.1; 0 1.6 0.2; 0 2.4 0.1], 3);
+    g2b = geom.NURBSCurve([1 0.1 0.2; 1 0.8 0.5; 1 1.6 0.4; 1 2.4 0.2], 3);
+    g3b = geom.NURBSCurve([2 0.0 0.4; 2 0.8 0.7; 2 1.6 0.8; 2 2.4 0.4], 3);
+    g4b = geom.NURBSCurve([3 0.1 0.1; 3 0.8 0.3; 3 1.6 0.2; 3 2.4 0.0], 3);
+
+    Smg = geom.NURBSSurface.multiGordon( ...
+        {{p1,p2,p3,p4}, {p1b,p2b,p3b,p4b}}, ...
+        {{g1,g2,g3,g4}, {g1b,g2b,g3b,g4b}}, ...
+        [0.65; 0.35], 3, 3, 25, 25);
+
+    fprintf('  multi-Gordon net size = %d x %d\n', size(Smg.P,1), size(Smg.P,2));
+
+    fig20 = figure('Name','20 - Multi-Gordon');
+    Smg.plot(28, 28, 'ShowCP', true, 'ShowIso', true);
+    title('Multi-Gordon blended surface');
+    view(3);
+catch ME
+    fprintf('  Multi-Gordon section failed: %s\n', ME.message);
+end
+
+%% ======================================================================
 % 19. SURFACE OF REVOLUTION
 %% ======================================================================
 fprintf('\n--- 19. Surface of revolution ---\n');
@@ -566,7 +600,7 @@ try
     Srev = geom.NURBSSurface.revolve(Cprof, [0 0 0], [0 0 1], 2*pi, 3, 9);
     fprintf('  revolution net size = %d x %d\n', size(Srev.P,1), size(Srev.P,2));
 
-    fig20 = figure('Name','20 - Surface of revolution');
+    fig21 = figure('Name','21 - Surface of revolution');
     Srev.plot(30, 28, 'ShowCP', true, 'ShowIso', true);
     title('Surface of revolution');
     view(3);
@@ -593,7 +627,7 @@ try
     Sswp = geom.NURBSSurface.sweep(Cprof2, Cspine, 3, 10, [0 0 1]);
     fprintf('  sweep net size = %d x %d\n', size(Sswp.P,1), size(Sswp.P,2));
 
-    fig21 = figure('Name','21 - Swept surface');
+    fig22 = figure('Name','22 - Swept surface');
     Sswp.plot(28, 22, 'ShowCP', true, 'ShowIso', true);
     hold on;
     Cspine.plot(200, 'ShowCP', false, 'Color', [0.9 0.1 0.1], 'LineWidth', 2.0);
@@ -601,6 +635,91 @@ try
     view(3);
 catch ME
     fprintf('  Sweep section failed: %s\n', ME.message);
+end
+
+%% ======================================================================
+% 21. TRIMMED SURFACE: UV LOOPS / INSIDE-OUTSIDE LOGIC
+%% ======================================================================
+fprintf('\n--- 21. Trimmed surface: UV loops / inside-outside logic ---\n');
+
+try
+    th = linspace(0, 2*pi, 180).';
+    outer = [0.5 + 0.42*cos(th), 0.5 + 0.33*sin(th)];
+    inner = [0.55 + 0.12*cos(th), 0.48 + 0.09*sin(th)];
+
+    Strim = S.setTrims({outer}, {inner});
+    fprintf('  isTrimmed() = %d\n', Strim.isTrimmed());
+    fprintf('  inside trim at (0.50,0.50) = %d\n', Strim.isInsideTrim(0.50,0.50));
+    fprintf('  inside trim at (0.10,0.10) = %d\n', Strim.isInsideTrim(0.10,0.10));
+    fprintf('  inside trim at (0.90,0.50) = %d\n', Strim.isInsideTrim(0.90,0.50));
+
+    fig23 = figure('Name','23 - Trim loops in UV');
+    Strim.plotTrimUV();
+    view(2);
+
+    fig24 = figure('Name','24 - Trimmed surface');
+    Strim.plot(32, 32, 'ShowCP', false, 'ShowIso', false, 'ShowTrims', true);
+    title('Trimmed surface with outer loop and inner hole');
+    view(3);
+catch ME
+    fprintf('  Trim logic section failed: %s\n', ME.message);
+end
+
+%% ======================================================================
+% 22. TRIMMED EVALUATION / TRIM MASK
+%% ======================================================================
+fprintf('\n--- 22. Trimmed evaluation / trim mask ---\n');
+
+try
+    p_in = Strim.evaluateTrimmed(0.20, 0.50);
+    fprintf('  evaluateTrimmed(0.20,0.50) = [%.6f %.6f %.6f]\n', p_in);
+
+    try
+        Strim.evaluateTrimmed(0.50, 0.48); % likely inside hole
+        fprintf('  hole test unexpectedly evaluated.\n');
+    catch MEhole
+        fprintf('  hole test blocked as expected: %s\n', MEhole.message);
+    end
+
+    mg = Strim.isoMesh(25, 25, 'RespectTrim', true);
+    kept = sum(mg.trimMask(:));
+    total = numel(mg.trimMask);
+    fprintf('  trim mask kept %d / %d mesh nodes\n', kept, total);
+
+    fig25 = figure('Name','25 - Trim mask visualization');
+    imagesc(mg.trimMask.');
+    axis equal tight;
+    title('Trim mask on mesh nodes');
+    xlabel('u-index');
+    ylabel('v-index');
+    colorbar;
+catch ME
+    fprintf('  Trim evaluation section failed: %s\n', ME.message);
+end
+
+%% ======================================================================
+% 23. TRIM-PRESERVING EDITS SMOKE TEST
+%% ======================================================================
+fprintf('\n--- 23. Trim-preserving edits smoke test ---\n');
+
+try
+    Srt = Strim.refine([0.3 0.6], [0.4 0.7]);
+    Seu = Strim.elevateU(1);
+    Sev = Strim.elevateV(1);
+
+    fprintf('  trimmed refined net = %d x %d\n', size(Srt.P,1), size(Srt.P,2));
+    fprintf('  trimmed elevateU: p %d -> %d\n', Strim.p, Seu.p);
+    fprintf('  trimmed elevateV: q %d -> %d\n', Strim.q, Sev.q);
+    fprintf('  refined still trimmed = %d\n', Srt.isTrimmed());
+    fprintf('  elevateU still trimmed = %d\n', Seu.isTrimmed());
+    fprintf('  elevateV still trimmed = %d\n', Sev.isTrimmed());
+
+    fig26 = figure('Name','26 - Trim-preserving refine');
+    Srt.plot(34, 34, 'ShowCP', false, 'ShowIso', false, 'ShowTrims', true);
+    title('Trimmed + refined');
+    view(3);
+catch ME
+    fprintf('  Trim-preserving edit section failed: %s\n', ME.message);
 end
 
 %% ======================================================================
@@ -627,5 +746,10 @@ fprintf('  (16) Bilinear patch\n');
 fprintf('  (17) Loft / skinning\n');
 fprintf('  (18) Coons patch\n');
 fprintf('  (19) Gordon surface\n');
-fprintf('  (20) Surface of revolution\n');
-fprintf('  (21) Swept surface\n');
+fprintf('  (20) Multi-Gordon\n');
+fprintf('  (21) Surface of revolution\n');
+fprintf('  (22) Swept surface\n');
+fprintf('  (23) Trim loops in UV\n');
+fprintf('  (24) Trimmed surface\n');
+fprintf('  (25) Trim mask visualization\n');
+fprintf('  (26) Trim-preserving refine\n');
