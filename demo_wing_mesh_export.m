@@ -36,9 +36,13 @@ doWGS = true;
 % Output names
 csvUpper = 'wing_upper_mesh.csv';
 csvLower = 'wing_lower_mesh.csv';
-vtkFile  = 'wing_upper_lower.vtk';
+
+vtkUpper = 'wing_upper.vtk';
+vtkLower = 'wing_lower.vtk';
+
 stlUpper = 'wing_upper_mesh.stl';
 stlLower = 'wing_lower_mesh.stl';
+
 wgsFile  = 'wing_upper_lower.wgs';
 
 %% ----------------------------------------------------------------------
@@ -132,7 +136,6 @@ fprintf('  upper mesh: nu = %d, nv = %d, quads = %d\n', ...
 fprintf('  lower mesh: nu = %d, nv = %d, quads = %d\n', ...
     meshLower.nu, meshLower.nv, size(meshLower.connectivity,1));
 
-% Trailing-edge check from chordwise last row (u = TE if LE->TE orientation)
 TEu = [meshUpper.X(end,:).', meshUpper.Y(end,:).', meshUpper.Z(end,:).'];
 TEl = [meshLower.X(end,:).', meshLower.Y(end,:).', meshLower.Z(end,:).'];
 dTE = vecnorm(TEu - TEl, 2, 2);
@@ -214,7 +217,8 @@ if doCSV
 end
 
 if doVTK
-    geom.MeshWriter.toVTK({meshUpper, meshLower}, vtkFile, 'IncludeNormals', true);
+    geom.MeshWriter.toVTK(meshUpper, vtkUpper, 'IncludeNormals', true);
+    geom.MeshWriter.toVTK(meshLower, vtkLower, 'IncludeNormals', true);
 end
 
 if doSTL
@@ -271,15 +275,6 @@ function section = buildAirfoilSectionLocal(filename, pFit, fitMethod)
 end
 
 function T = makeWingSectionTransformLocal(chord, alpha, LE_xyz)
-    % Local airfoil coordinates:
-    %   x = chordwise
-    %   y = thickness/camber direction
-    %
-    % Map local 2D airfoil into global 3D:
-    %   local x -> global X/Z plane with incidence rotation about Y
-    %   local y -> global Z before incidence
-    %   section plane lies at constant global Y
-
     c = cos(alpha);
     s = sin(alpha);
 
