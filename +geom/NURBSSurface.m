@@ -13,18 +13,19 @@ classdef NURBSSurface < handle
 %   - knot removal in u and v
 %   - rectangular-net interpolation / least-squares fitting
 %   - ruled and bilinear constructors
-%
-% Notes
-%   - Uses geom.BasisFunctions for low-level B-spline basis evaluation
-%   - Uses geom.NURBSCurve row/column operators for many surface edits
+%   - Coons patch
+%   - Gordon surface
+%   - loft / skinning with compatible knot merging
+%   - surface of revolution
+%   - swept surface
 
     properties
-        P       % [(n+1) x (m+1) x 3] Cartesian control net
-        W       % [(n+1) x (m+1)] weights
-        U       % u knot vector
-        V       % v knot vector
-        p       % degree in u
-        q       % degree in v
+        P
+        W
+        U
+        V
+        p
+        q
     end
 
     properties (Dependent)
@@ -193,7 +194,6 @@ classdef NURBSSurface < handle
         end
 
         function SKL = derivatives(obj, u, v, d)
-        % Returns SKL{k+1,l+1} = d^(k+l)S / du^k dv^l at scalar (u,v).
             if nargin < 4 || isempty(d)
                 d = 1;
             end
@@ -722,7 +722,6 @@ classdef NURBSSurface < handle
         end
 
         function patches = decomposeBezier(obj)
-        % Full tensor-product Bezier patch decomposition.
             Su = obj;
 
             Ui = unique(Su.U(Su.p+2:end-Su.p-1));
@@ -1090,7 +1089,6 @@ classdef NURBSSurface < handle
         end
 
         function S = globalInterpNet(Q, p, q, methodU, methodV)
-        % Interpolate a rectangular data net Q(i,j,:) exactly.
             if nargin < 4 || isempty(methodU), methodU = 'centripetal'; end
             if nargin < 5 || isempty(methodV), methodV = 'centripetal'; end
 
@@ -1126,7 +1124,6 @@ classdef NURBSSurface < handle
         end
 
         function S = globalLeastSquaresFitNet(Q, p, q, nCtrlU, nCtrlV, methodU, methodV)
-        % Least-squares fit a rectangular data net.
             if nargin < 6 || isempty(methodU), methodU = 'centripetal'; end
             if nargin < 7 || isempty(methodV), methodV = 'centripetal'; end
 
@@ -1162,7 +1159,6 @@ classdef NURBSSurface < handle
         end
 
         function S = ruled(C1, C2)
-        % Exact ruled surface between compatible NURBS curves.
             if C1.p ~= C2.p || numel(C1.U) ~= numel(C2.U) || any(abs(C1.U - C2.U) > 1e-12)
                 error('NURBSSurface:ruled', 'Curves must have matching degree and knot vector.');
             end
@@ -1186,7 +1182,6 @@ classdef NURBSSurface < handle
         end
 
         function S = bilinearCoons(P00, P10, P01, P11)
-        % Bilinear tensor-product patch from four corner points.
             P = zeros(2,2,3);
             P(1,1,:) = reshape(P00,1,1,3);
             P(2,1,:) = reshape(P10,1,1,3);
@@ -1198,6 +1193,333 @@ classdef NURBSSurface < handle
             V = [0 0 1 1];
 
             S = geom.NURBSSurface(P, 1, 1, U, V, W);
+        end
+
+        function [curvesOut, pmax, Uunion] = makeCompatibleCurves(curves)
+        % Elevate/refine a set of curves to common degree and knot vector.
+            if ~iscell(curves), curves = {curves}; end
+            if isempty(curves)
+                error('NURBSSurface:makeCompatibleCurves', 'Need at least one curve.');
+            end
+
+            pmax = max(cellfun(@(c) c.p, curves));
+            curvesOut = curves;
+
+            for k = 1:numel(curvesOut)
+                if curvesOut{k}.p < pmax
+                    curvesOut{k} = curvesOut{k}.elevate(pmax - curvesOut{k}.p);
+                end
+            end
+
+            Uunion = curvesOut{1}.U;
+            for k = 2:numel(curvesOut)
+                Uunion = union(Uunion, curvesOut{k}.U);
+            end
+            Uunion = sort(Uunion(:).');
+
+            % insert missing multiplicities
+            for val = Uunion
+                multTarget = max(cellfun(@(c) sum(abs(c.U - val) < 1e-12), curvesOut));
+                for k = 1:numel(curvesOut)
+                    multK = sum(abs(curvesOut{k}.U - val) < 1e-12);
+                    if multK < multTarget
+                        curvesOut{k} = curvesOut{k}.insertKnot(val, multTarget - multK);
+                    end
+                end
+            end
+
+            Uunion = curvesOut{1}.U;
+        end
+
+        function v = sectionParameters(curves, method)
+            if nargin < 2 || isempty(method), method = 'centripetal'; end
+            if ~iscell(curves), curves = {curves}; end
+
+            nsec = numel(curves);
+            Q = zeros(nsec, 3);
+            for k = 1:nsec
+                uk = 0.5 * (curves{k}.domain(1) + curves{k}.domain(2));
+                Q(k,:) = curves{k}.evaluate(uk);
+            end
+            v = geom.NURBSCurve.parameterizeData(Q, method, min(3, nsec-1));
+        end
+
+        function S = loft(curves, q, method, sectionParams)
+        % Exact skinning / lofting of compatible section curves.
+        %
+        % curves: cell array of NURBSCurve section curves
+        % q     : loft degree
+        % method: parameterization method for section direction
+        %
+        % The section curves are elevated/refined to compatibility, then the
+        % control net is interpolated in homogeneous space through sections.
+
+            if nargin < 2 || isempty(q), q = 3; end
+            if nargin < 3 || isempty(method), method = 'centripetal'; end
+            if ~iscell(curves), curves = {curves}; end
+            if numel(curves) < 2
+                error('NURBSSurface:loft', 'Need at least two section curves.');
+            end
+
+            [curvesC, pU, U] = geom.NURBSSurface.makeCompatibleCurves(curves);
+            nsec = numel(curvesC);
+            nCtrlU = size(curvesC{1}.P,1);
+
+            if q > nsec-1
+                error('NURBSSurface:loft', ...
+                    'Loft degree q=%d exceeds number of sections-1 = %d.', q, nsec-1);
+            end
+
+            if nargin < 4 || isempty(sectionParams)
+                vpar = geom.NURBSSurface.sectionParameters(curvesC, method);
+            else
+                vpar = sectionParams(:);
+                if numel(vpar) ~= nsec
+                    error('NURBSSurface:loft', 'sectionParams must match number of curves.');
+                end
+            end
+
+            V = geom.NURBSCurve.averagingKnotVector(vpar, q);
+
+            % Basis matrix in section direction
+            A = zeros(nsec, nsec);
+            nV = nsec - 1;
+            for r = 1:nsec
+                span = geom.BasisFunctions.FindSpan(nV, q, vpar(r), V);
+                N = geom.BasisFunctions.BasisFuns(span, vpar(r), q, V);
+                cols = (span-q):span;
+                A(r, cols) = N;
+            end
+
+            P = zeros(nCtrlU, nsec, 3);
+            W = zeros(nCtrlU, nsec);
+
+            for i = 1:nCtrlU
+                H = zeros(nsec, 4);
+                for s = 1:nsec
+                    w = curvesC{s}.W(i);
+                    H(s,:) = [w * curvesC{s}.P(i,:), w];
+                end
+
+                Qh = A \ H;
+                if any(Qh(:,4) <= 0)
+                    error('NURBSSurface:loft', ...
+                        'Lofting produced nonpositive weights.');
+                end
+
+                W(i,:) = Qh(:,4).';
+                P(i,:,:) = Qh(:,1:3) ./ Qh(:,4);
+            end
+
+            S = geom.NURBSSurface(P, pU, q, U, V, W);
+        end
+
+        function S = coons(Cu0, Cu1, Cv0, Cv1, p, q, nu, nv)
+        % Coons patch from four boundary curves using
+        % S(u,v) = Su(u,v) + Sv(u,v) - Sbilinear(u,v)
+        %
+        % Cu0, Cu1: curves along u at v=0 and v=1
+        % Cv0, Cv1: curves along v at u=0 and u=1
+        %
+        % Practical kernel implementation: evaluate transfinite blend on a
+        % rectangular grid, then interpolate as a tensor-product NURBS surface.
+
+            if nargin < 5 || isempty(p), p = 3; end
+            if nargin < 6 || isempty(q), q = 3; end
+            if nargin < 7 || isempty(nu), nu = 21; end
+            if nargin < 8 || isempty(nv), nv = 21; end
+
+            % Corner consistency
+            P00 = Cu0.evaluate(Cu0.domain(1));
+            P10 = Cu0.evaluate(Cu0.domain(2));
+            P01 = Cu1.evaluate(Cu1.domain(1));
+            P11 = Cu1.evaluate(Cu1.domain(2));
+
+            Q00 = Cv0.evaluate(Cv0.domain(1));
+            Q01 = Cv0.evaluate(Cv0.domain(2));
+            Q10 = Cv1.evaluate(Cv1.domain(1));
+            Q11 = Cv1.evaluate(Cv1.domain(2));
+
+            if max([norm(P00-Q00), norm(P01-Q01), norm(P10-Q10), norm(P11-Q11)]) > 1e-6
+                error('NURBSSurface:coons', ...
+                    'Boundary curve corners are inconsistent.');
+            end
+
+            ug = linspace(0,1,nu);
+            vg = linspace(0,1,nv);
+            Q = zeros(nu, nv, 3);
+
+            for i = 1:nu
+                u = ug(i);
+
+                Pu0 = Cu0.evaluate(Cu0.domain(1) + u*(Cu0.domain(2)-Cu0.domain(1)));
+                Pu1 = Cu1.evaluate(Cu1.domain(1) + u*(Cu1.domain(2)-Cu1.domain(1)));
+
+                for j = 1:nv
+                    v = vg(j);
+
+                    Pv0 = Cv0.evaluate(Cv0.domain(1) + v*(Cv0.domain(2)-Cv0.domain(1)));
+                    Pv1 = Cv1.evaluate(Cv1.domain(1) + v*(Cv1.domain(2)-Cv1.domain(1)));
+
+                    Suv = (1-v) * Pu0 + v * Pu1;
+                    Svv = (1-u) * Pv0 + u * Pv1;
+
+                    Sbil = (1-u)*(1-v)*P00 + u*(1-v)*P10 + (1-u)*v*P01 + u*v*P11;
+
+                    Q(i,j,:) = Suv + Svv - Sbil;
+                end
+            end
+
+            S = geom.NURBSSurface.globalInterpNet(Q, p, q, 'chord', 'chord');
+        end
+
+        function S = gordon(profileCurves, guideCurves, p, q, nu, nv)
+        % Gordon surface from a network of profile and guide curves.
+        %
+        % Practical kernel implementation:
+        %   1) loft profile curves
+        %   2) loft guide curves, then swap UV
+        %   3) build an intersection-net surface from sampled intersections
+        %   4) combine sampled surfaces as S = Sp + Sg - Si
+        %   5) interpolate resulting rectangular net
+
+            if nargin < 3 || isempty(p), p = 3; end
+            if nargin < 4 || isempty(q), q = 3; end
+            if nargin < 5 || isempty(nu), nu = 25; end
+            if nargin < 6 || isempty(nv), nv = 25; end
+
+            if ~iscell(profileCurves), profileCurves = {profileCurves}; end
+            if ~iscell(guideCurves), guideCurves = {guideCurves}; end
+            if numel(profileCurves) < 2 || numel(guideCurves) < 2
+                error('NURBSSurface:gordon', ...
+                    'Need at least two profile curves and two guide curves.');
+            end
+
+            Sp = geom.NURBSSurface.loft(profileCurves, q, 'centripetal');
+            Sg = geom.NURBSSurface.loft(guideCurves, p, 'centripetal').swapUV();
+
+            % Build intersection net by sampling each profile at guide stations
+            vp = linspace(0,1,numel(profileCurves));
+            ug = linspace(0,1,numel(guideCurves));
+            X = zeros(numel(ug), numel(vp), 3);
+
+            for i = 1:numel(ug)
+                for j = 1:numel(vp)
+                    X(i,j,:) = Sp.evaluate(ug(i), vp(j));
+                end
+            end
+
+            Si = geom.NURBSSurface.globalInterpNet(X, p, q, 'uniform', 'uniform');
+
+            ugrid = linspace(0,1,nu);
+            vgrid = linspace(0,1,nv);
+            Q = zeros(nu, nv, 3);
+
+            for i = 1:nu
+                for j = 1:nv
+                    Pp = Sp.evaluate(ugrid(i), vgrid(j));
+                    Pg = Sg.evaluate(ugrid(i), vgrid(j));
+                    Pi = Si.evaluate(ugrid(i), vgrid(j));
+                    Q(i,j,:) = Pp + Pg - Pi;
+                end
+            end
+
+            S = geom.NURBSSurface.globalInterpNet(Q, p, q, 'chord', 'chord');
+        end
+
+        function S = revolve(C, axisPoint, axisDir, thetaTotal, q, nSections)
+        % Surface of revolution from a profile curve.
+        %
+        % Practical kernel implementation by rotating section curves and lofting.
+
+            if nargin < 4 || isempty(thetaTotal), thetaTotal = 2*pi; end
+            if nargin < 5 || isempty(q), q = 3; end
+            if nargin < 6 || isempty(nSections), nSections = 9; end
+
+            axisPoint = axisPoint(:).';
+            axisDir = axisDir(:).';
+            axisDir = axisDir / norm(axisDir);
+
+            th = linspace(0, thetaTotal, nSections);
+            curves = cell(1, nSections);
+
+            for k = 1:nSections
+                T = geom.NURBSSurface.axisRotationTransform(axisPoint, axisDir, th(k));
+                curves{k} = C.transform(T);
+            end
+
+            S = geom.NURBSSurface.loft(curves, q, 'chord');
+        end
+
+        function S = sweep(profileCurve, spineCurve, q, nStations, upVec)
+        % General sweep of a profile along a spine.
+        %
+        % The profile is assumed to live in its own local YZ-plane, with the
+        % sweep direction mapped to the spine tangent and the profile plane
+        % carried by a frame built from tangent + reference up vector.
+
+            if nargin < 3 || isempty(q), q = 3; end
+            if nargin < 4 || isempty(nStations), nStations = 9; end
+            if nargin < 5 || isempty(upVec), upVec = [0 0 1]; end
+
+            upVec = upVec(:).';
+            upVec = upVec / norm(upVec);
+
+            ts = spineCurve.arcLengthParam(nStations);
+            sections = cell(1, nStations);
+
+            for k = 1:nStations
+                tk = ts(k);
+                P0 = spineCurve.evaluate(tk);
+                T0 = spineCurve.tangent(tk);
+                T0 = T0 / norm(T0);
+
+                B0 = cross(T0, upVec);
+                if norm(B0) < 1e-8
+                    alt = [1 0 0];
+                    if abs(dot(T0, alt)) > 0.9
+                        alt = [0 1 0];
+                    end
+                    B0 = cross(T0, alt);
+                end
+                B0 = B0 / norm(B0);
+                N0 = cross(B0, T0);
+                N0 = N0 / norm(N0);
+
+                % Map local profile frame:
+                % local x -> tangent
+                % local y -> normal
+                % local z -> binormal
+                R = [T0(:), N0(:), B0(:)];
+                H = eye(4);
+                H(1:3,1:3) = R;
+                H(1:3,4) = P0(:);
+
+                sections{k} = profileCurve.transform(H);
+            end
+
+            S = geom.NURBSSurface.loft(sections, q, 'chord');
+        end
+    end
+
+    methods (Static, Access = private)
+        function T = axisRotationTransform(point, axisDir, theta)
+            axisDir = axisDir(:) / norm(axisDir);
+            x = axisDir(1); y = axisDir(2); z = axisDir(3);
+            c = cos(theta);
+            s = sin(theta);
+            C = 1 - c;
+
+            R = [x*x*C + c,   x*y*C - z*s, x*z*C + y*s; ...
+                 y*x*C + z*s, y*y*C + c,   y*z*C - x*s; ...
+                 z*x*C - y*s, z*y*C + x*s, z*z*C + c];
+
+            p = point(:);
+            t = p - R*p;
+
+            T = eye(4);
+            T(1:3,1:3) = R;
+            T(1:3,4) = t;
         end
     end
 end

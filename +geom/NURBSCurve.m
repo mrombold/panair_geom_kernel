@@ -11,6 +11,8 @@ classdef NURBSCurve < handle
 %   - approximate degree reduction in homogeneous space
 %   - closest-point projection
 %   - global interpolation / least-squares fitting
+%   - weighted and constrained least-squares fitting
+%   - multiple parameterization methods
 %
 % Notes:
 %   - Control points are stored in Cartesian form P plus weights W.
@@ -662,33 +664,66 @@ classdef NURBSCurve < handle
         function U = averagingKnotVector(params, p)
             params = params(:).';
             n = numel(params) - 1;
-    
-            U = zeros(1, n + p + 2);
+
+            U = zeros(1, n+p+2);
             U(1:p+1) = params(1);
             U(end-p:end) = params(end);
-    
+
             for j = 1:(n-p)
                 U(j+p+1) = sum(params(j+1:j+p)) / p;
             end
         end
 
-        function u = parameterizeData(Q, method)
+        function u = parameterizeData(Q, method, varargin)
             if nargin < 2 || isempty(method), method = 'centripetal'; end
             Q = geom.NURBSCurve.ensure3D(Q);
 
             m = size(Q,1) - 1;
-            d = zeros(m,1);
+            method = lower(string(method));
 
-            for k = 1:m
-                dk = norm(Q(k+1,:) - Q(k,:));
-                switch lower(method)
-                    case 'uniform'
-                        d(k) = 1;
-                    case 'chord'
-                        d(k) = dk;
-                    otherwise
-                        d(k) = sqrt(dk);
-                end
+            switch method
+                case "uniform"
+                    u = linspace(0, 1, m+1).';
+                    return
+
+                case "chord"
+                    d = zeros(m,1);
+                    for k = 1:m
+                        d(k) = norm(Q(k+1,:) - Q(k,:));
+                    end
+
+                case "centripetal"
+                    d = zeros(m,1);
+                    for k = 1:m
+                        d(k) = sqrt(norm(Q(k+1,:) - Q(k,:)));
+                    end
+
+                case "arc_length"
+                    use_degree = [];
+                    if ~isempty(varargin)
+                        use_degree = varargin{1};
+                    end
+                    if isempty(use_degree)
+                        use_degree = min(3, m);
+                    end
+                    use_degree = max(1, min(use_degree, m));
+
+                    u0 = geom.NURBSCurve.parameterizeData(Q, 'chord');
+                    C0 = geom.NURBSCurve.globalInterpWithParams(Q, use_degree, u0);
+
+                    us = u0;
+                    pts = C0.evaluate(us);
+                    s = [0; cumsum(vecnorm(diff(pts,1,1),2,2))];
+                    if s(end) < eps
+                        u = linspace(0,1,m+1).';
+                    else
+                        u = s / s(end);
+                    end
+                    return
+
+                otherwise
+                    error('NURBSCurve:parameterizeData', ...
+                        'Unknown parameterization method "%s".', method);
             end
 
             total = sum(d);
@@ -696,7 +731,7 @@ classdef NURBSCurve < handle
 
             if total < eps
                 u = linspace(0,1,m+1).';
-                return;
+                return
             end
 
             for k = 2:m+1
@@ -705,22 +740,23 @@ classdef NURBSCurve < handle
             u(end) = 1;
         end
 
-         function C = globalInterp(Q, p, method)
-        % Global interpolation of data points with unit weights.
-    
-            if nargin < 3 || isempty(method), method = 'centripetal'; end
-    
+        function C = globalInterpWithParams(Q, p, u)
+        % Global interpolation of Q using user-supplied parameters u.
             Q = geom.NURBSCurve.ensure3D(Q);
+            u = u(:);
+
             n = size(Q,1) - 1;
-    
+            if numel(u) ~= n+1
+                error('NURBSCurve:globalInterpWithParams', ...
+                    'u must have one parameter per data point.');
+            end
             if p > n
-                error('NURBSCurve:globalInterp', ...
+                error('NURBSCurve:globalInterpWithParams', ...
                     'Degree exceeds number of data points minus one.');
             end
-    
-            u = geom.NURBSCurve.parameterizeData(Q, method);
+
             U = geom.NURBSCurve.averagingKnotVector(u, p);
-    
+
             A = zeros(n+1, n+1);
             for r = 1:n+1
                 span = geom.BasisFunctions.FindSpan(n, p, u(r), U);
@@ -728,28 +764,35 @@ classdef NURBSCurve < handle
                 cols = (span-p):span;
                 A(r, cols) = N;
             end
-    
+
             P = A \ Q;
-    
-            if size(P,1) ~= n+1 || size(P,2) ~= 3
-                error('NURBSCurve:globalInterp', ...
-                    'Interpolation solve returned a control-point array of size %dx%d, expected %dx3.', ...
-                    size(P,1), size(P,2), n+1);
-            end
-    
             C = geom.NURBSCurve(P, p, U, ones(n+1,1));
         end
 
-            function C = globalLeastSquaresFit(Q, p, nCtrl, method)
-        % Global least-squares fit of data Q with nCtrl control points.
-    
-            if nargin < 4 || isempty(method), method = 'centripetal'; end
-    
+        function C = globalInterp(Q, p, method)
+            if nargin < 3 || isempty(method), method = 'centripetal'; end
+
             Q = geom.NURBSCurve.ensure3D(Q);
-    
-            m = size(Q,1) - 1;     % data index
-            n = nCtrl - 1;         % control-point index
-    
+            n = size(Q,1) - 1;
+
+            if p > n
+                error('NURBSCurve:globalInterp', ...
+                    'Degree exceeds number of data points minus one.');
+            end
+
+            u = geom.NURBSCurve.parameterizeData(Q, method, p);
+            C = geom.NURBSCurve.globalInterpWithParams(Q, p, u);
+        end
+
+        function C = globalLeastSquaresFit(Q, p, nCtrl, method)
+        % Global least-squares fit of data Q with nCtrl control points.
+            if nargin < 4 || isempty(method), method = 'centripetal'; end
+
+            Q = geom.NURBSCurve.ensure3D(Q);
+
+            m = size(Q,1) - 1;
+            n = nCtrl - 1;
+
             if nCtrl < p + 1
                 error('NURBSCurve:globalLeastSquaresFit', ...
                     'Need at least p+1 control points.');
@@ -758,26 +801,10 @@ classdef NURBSCurve < handle
                 error('NURBSCurve:globalLeastSquaresFit', ...
                     'Need at least as many data points as control points.');
             end
-    
-            u = geom.NURBSCurve.parameterizeData(Q, method);
-    
-            % Averaged knot vector for LSQ fitting
-            U = zeros(1, n + p + 2);
-            U(1:p+1) = 0;
-            U(end-p:end) = 1;
-    
-            if (n-p) >= 1
-                d = (m + 1) / (n - p + 1);
-                for j = 1:(n-p)
-                    jd = j * d;
-                    i = floor(jd);
-                    alpha = jd - i;
-    
-                    i = max(1, min(i, m));
-                    U(j+p+1) = (1-alpha) * u(i) + alpha * u(i+1);
-                end
-            end
-    
+
+            u = geom.NURBSCurve.parameterizeData(Q, method, p);
+            U = geom.NURBSCurve.makeApproximationKnotVector(u, n, p);
+
             Nmat = zeros(m+1, n+1);
             for r = 1:m+1
                 span = geom.BasisFunctions.FindSpan(n, p, u(r), U);
@@ -785,17 +812,134 @@ classdef NURBSCurve < handle
                 cols = (span-p):span;
                 Nmat(r, cols) = N;
             end
-    
+
             P = Nmat \ Q;
-    
+
             if size(P,1) ~= (n+1) || size(P,2) ~= 3
                 error('NURBSCurve:globalLeastSquaresFit', ...
                     'Least-squares solve returned size %dx%d, expected %dx3.', ...
                     size(P,1), size(P,2), n+1);
             end
-    
+
             C = geom.NURBSCurve(P, p, U, ones(n+1,1));
-    end
+        end
+
+        function C = globalWeightedLeastSquaresFit(Q, p, nCtrl, weights, method)
+        % Weighted global least-squares fit.
+            if nargin < 5 || isempty(method), method = 'centripetal'; end
+
+            Q = geom.NURBSCurve.ensure3D(Q);
+            weights = weights(:);
+
+            m = size(Q,1) - 1;
+            n = nCtrl - 1;
+
+            if numel(weights) ~= m+1
+                error('NURBSCurve:globalWeightedLeastSquaresFit', ...
+                    'weights must match the number of data points.');
+            end
+            if any(weights <= 0)
+                error('NURBSCurve:globalWeightedLeastSquaresFit', ...
+                    'weights must be strictly positive.');
+            end
+            if nCtrl < p + 1
+                error('NURBSCurve:globalWeightedLeastSquaresFit', ...
+                    'Need at least p+1 control points.');
+            end
+            if m < n
+                error('NURBSCurve:globalWeightedLeastSquaresFit', ...
+                    'Need at least as many data points as control points.');
+            end
+
+            u = geom.NURBSCurve.parameterizeData(Q, method, p);
+            U = geom.NURBSCurve.makeApproximationKnotVector(u, n, p);
+
+            Nmat = zeros(m+1, n+1);
+            for r = 1:m+1
+                span = geom.BasisFunctions.FindSpan(n, p, u(r), U);
+                N = geom.BasisFunctions.BasisFuns(span, u(r), p, U);
+                cols = (span-p):span;
+                Nmat(r, cols) = N;
+            end
+
+            Wsqrt = diag(sqrt(weights));
+            A = Wsqrt * Nmat;
+            B = Wsqrt * Q;
+
+            P = A \ B;
+            C = geom.NURBSCurve(P, p, U, ones(n+1,1));
+        end
+
+        function C = globalConstrainedLeastSquaresFit(Q, p, nCtrl, fixedIdx, fixedPts, method)
+        % Constrained global LSQ fit.
+            if nargin < 6 || isempty(method), method = 'centripetal'; end
+
+            Q = geom.NURBSCurve.ensure3D(Q);
+            fixedIdx = fixedIdx(:);
+            fixedPts = geom.NURBSCurve.ensure3D(fixedPts);
+
+            m = size(Q,1) - 1;
+            n = nCtrl - 1;
+
+            if nCtrl < p + 1
+                error('NURBSCurve:globalConstrainedLeastSquaresFit', ...
+                    'Need at least p+1 control points.');
+            end
+            if m < n
+                error('NURBSCurve:globalConstrainedLeastSquaresFit', ...
+                    'Need at least as many data points as control points.');
+            end
+            if size(fixedPts,1) ~= numel(fixedIdx)
+                error('NURBSCurve:globalConstrainedLeastSquaresFit', ...
+                    'fixedIdx and fixedPts must have matching lengths.');
+            end
+            if any(fixedIdx < 1 | fixedIdx > nCtrl)
+                error('NURBSCurve:globalConstrainedLeastSquaresFit', ...
+                    'fixedIdx out of bounds.');
+            end
+            if numel(unique(fixedIdx)) ~= numel(fixedIdx)
+                error('NURBSCurve:globalConstrainedLeastSquaresFit', ...
+                    'fixedIdx must be unique.');
+            end
+
+            u = geom.NURBSCurve.parameterizeData(Q, method, p);
+            U = geom.NURBSCurve.makeApproximationKnotVector(u, n, p);
+
+            Nmat = zeros(m+1, n+1);
+            for r = 1:m+1
+                span = geom.BasisFunctions.FindSpan(n, p, u(r), U);
+                N = geom.BasisFunctions.BasisFuns(span, u(r), p, U);
+                cols = (span-p):span;
+                Nmat(r, cols) = N;
+            end
+
+            allIdx  = (1:nCtrl).';
+            freeIdx = setdiff(allIdx, fixedIdx, 'stable');
+
+            Afree = Nmat(:, freeIdx);
+            Afixed = Nmat(:, fixedIdx);
+
+            rhs = Q - Afixed * fixedPts;
+            Pfree = Afree \ rhs;
+
+            P = zeros(nCtrl, 3);
+            P(fixedIdx, :) = fixedPts;
+            P(freeIdx, :) = Pfree;
+
+            C = geom.NURBSCurve(P, p, U, ones(nCtrl,1));
+        end
+
+        function C = globalLeastSquaresFitFixedEnds(Q, p, nCtrl, method)
+        % LSQ fit with first and last control points fixed to the data endpoints.
+            if nargin < 4 || isempty(method), method = 'centripetal'; end
+
+            Q = geom.NURBSCurve.ensure3D(Q);
+            fixedIdx = [1; nCtrl];
+            fixedPts = [Q(1,:); Q(end,:)];
+
+            C = geom.NURBSCurve.globalConstrainedLeastSquaresFit( ...
+                Q, p, nCtrl, fixedIdx, fixedPts, method);
+        end
 
         function C = line(P0, P1)
             P0 = geom.NURBSCurve.ensure3D(P0);
@@ -914,6 +1058,27 @@ classdef NURBSCurve < handle
             end
         end
 
+        function U = makeApproximationKnotVector(u, n, p)
+            u = u(:);
+            m = numel(u) - 1;
+
+            U = zeros(1, n + p + 2);
+            U(1:p+1) = 0;
+            U(end-p:end) = 1;
+
+            if (n - p) >= 1
+                d = (m + 1) / (n - p + 1);
+                for j = 1:(n-p)
+                    jd = j * d;
+                    i = floor(jd);
+                    alpha = jd - i;
+
+                    i = max(1, min(i, m));
+                    U(j+p+1) = (1-alpha) * u(i) + alpha * u(i+1);
+                end
+            end
+        end
+
         function [x, w] = gaussLegendre(n)
             switch n
                 case 2
@@ -934,40 +1099,31 @@ classdef NURBSCurve < handle
 
     methods (Access = private)
         function C2 = insertKnotOnce(obj, u)
-        % Exact single knot insertion (Piegl & Tiller, 1-based MATLAB form).
-    
+        % Exact single knot insertion.
             p  = obj.p;
             U  = obj.U;
             Pw = obj.Pw;
             n  = obj.n;
-    
+
             u = obj.clamp(u);
-    
-            % span is used in the same 1-based convention as the rest of this class
             span = geom.BasisFunctions.FindSpan(n, p, u, U);
-            s    = obj.knotMultiplicity(u, 1e-12);
-    
+            s = obj.knotMultiplicity(u, 1e-12);
+
             if s >= p
                 C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
                 return;
             end
-    
-            % New knot vector: insert u after U(span)
+
             Up = zeros(1, numel(U) + 1);
             Up(1:span) = U(1:span);
             Up(span+1) = u;
             Up(span+2:end) = U(span+1:end);
-    
-            % New homogeneous control net
+
             Qw = zeros(size(Pw,1) + 1, 4);
-    
-            % Unaffected left block
+
             Qw(1:span-p, :) = Pw(1:span-p, :);
-    
-            % Unaffected right block
             Qw(span-s+1:end, :) = Pw(span-s:end, :);
-    
-            % Updated middle block
+
             for j = (span-p+1):(span-s)
                 denom = U(j+p) - U(j);
                 if abs(denom) < 1e-14
@@ -977,16 +1133,16 @@ classdef NURBSCurve < handle
                 end
                 Qw(j,:) = alpha * Pw(j,:) + (1-alpha) * Pw(j-1,:);
             end
-    
+
             if any(diff(Up) < -1e-14)
                 error('NURBSCurve:insertKnotOnce', 'Internal error: generated knot vector is not nondecreasing.');
             end
-    
+
             W2 = Qw(:,4);
             if any(W2 <= 0)
                 error('NURBSCurve:insertKnotOnce', 'Knot insertion produced nonpositive weights.');
             end
-    
+
             P2 = Qw(:,1:3) ./ W2;
             C2 = geom.NURBSCurve(P2, p, Up, W2);
         end
@@ -995,64 +1151,59 @@ classdef NURBSCurve < handle
             ok = false;
             Ccand = obj;
             maxErr = inf;
-    
+
             tolK = 1e-12;
             idx = find(abs(obj.U - u) < tolK, 1, 'first');
             if isempty(idx)
                 return;
             end
-    
-            % Do not remove end-clamping copies here
+
             if idx <= obj.p+1 || idx >= numel(obj.U)-obj.p
                 return;
             end
-    
+
             Ucand = obj.U;
             Ucand(idx) = [];
-    
+
             n2 = numel(Ucand) - obj.p - 2;
             if n2 < obj.p
                 return;
             end
-    
-            % Greville points for the candidate knot vector
+
             g = geom.NURBSCurve.grevilleFromKnotVector(Ucand, obj.p);
-    
-            % Sample original curve in homogeneous space at those parameters
             H = obj.evaluateHomogeneous(g);
-    
-            % Build square interpolation matrix for the candidate curve
+
             A = zeros(n2+1, n2+1);
             for rr = 1:n2+1
                 span = geom.BasisFunctions.FindSpan(n2, obj.p, g(rr), Ucand);
                 N = geom.BasisFunctions.BasisFuns(span, g(rr), obj.p, Ucand);
-    
-                cols = (span-obj.p):span;   % 1-based convention used elsewhere
+
+                cols = (span-obj.p):span;
                 if cols(1) < 1 || cols(end) > (n2+1)
                     return;
                 end
-    
+
                 A(rr, cols) = N;
             end
-    
+
             if size(A,1) ~= size(A,2)
                 return;
             end
             if rcond(A) < 1e-13
                 return;
             end
-    
+
             Qw = A \ H;
             if any(Qw(:,4) <= 0)
                 return;
             end
-    
+
             Q = Qw(:,1:3) ./ Qw(:,4);
             Ctest = geom.NURBSCurve(Q, obj.p, Ucand, Qw(:,4));
-    
+
             us = geom.NURBSCurve.validationParams(obj.U, Ucand, nSample);
             maxErr = max(vecnorm(obj.evaluate(us) - Ctest.evaluate(us), 2, 2));
-    
+
             if maxErr <= tol
                 ok = true;
                 Ccand = Ctest;
