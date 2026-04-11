@@ -1,10 +1,21 @@
 classdef NURBSCurve < handle
-% NURBSCURVE  Rational B-spline curve with exact evaluation/derivative core.
+% NURBSCURVE  Rational B-spline / NURBS curve kernel.
 %
-%   This version is cleaned up around the standard Piegl & Tiller curve
-%   workflow: evaluation, exact rational derivatives, knot insertion,
-%   Bezier decomposition, exact degree elevation, splitting, interpolation,
-%   and projection.
+% Core capabilities:
+%   - exact rational evaluation
+%   - exact rational derivatives
+%   - tangent / curvature / Frenet frame
+%   - arc length
+%   - exact knot insertion / refinement / split / Bezier decomposition
+%   - degree elevation
+%   - approximate degree reduction in homogeneous space
+%   - closest-point projection
+%   - global interpolation / least-squares fitting
+%
+% Notes:
+%   - Control points are stored in Cartesian form P plus weights W.
+%   - Homogeneous control points are formed internally as Pw = [w*x w*y w*z w].
+%   - Parameter domain is [U(p+1), U(end-p)] for clamped/open curves.
 
     properties
         P   % [n+1 x 3] Cartesian control points
@@ -32,9 +43,11 @@ classdef NURBSCurve < handle
             elseif dim ~= 3
                 error('NURBSCurve:Constructor', 'P must be Nx2 or Nx3.');
             end
+
             if ~isscalar(p) || p < 0 || p ~= floor(p)
                 error('NURBSCurve:Constructor', 'Degree p must be a nonnegative integer.');
             end
+
             n = npts - 1;
             if p > n
                 error('NURBSCurve:Constructor', 'Degree p=%d exceeds n=%d.', p, n);
@@ -55,8 +68,9 @@ classdef NURBSCurve < handle
             if nargin < 3 || isempty(U)
                 U = geom.BasisFunctions.MakeUniformKnotVector(n, p);
             else
-                U = U(:)';
+                U = U(:).';
             end
+
             if numel(U) ~= n + p + 2
                 error('NURBSCurve:Constructor', 'Knot-vector length must be n+p+2.');
             end
@@ -68,6 +82,7 @@ classdef NURBSCurve < handle
             obj.W = W;
             obj.U = U;
             obj.p = p;
+
             obj.validate();
         end
 
@@ -89,7 +104,7 @@ classdef NURBSCurve < handle
     end
 
     methods
-        function validate(obj)
+        function tf = validate(obj)
             if size(obj.P,1) ~= numel(obj.W)
                 error('NURBSCurve:Validate', 'P and W sizes are inconsistent.');
             end
@@ -102,6 +117,7 @@ classdef NURBSCurve < handle
             if any(obj.W <= 0)
                 error('NURBSCurve:Validate', 'Weights must be strictly positive.');
             end
+            tf = true;
         end
 
         function tf = isClamped(obj)
@@ -115,12 +131,14 @@ classdef NURBSCurve < handle
         end
 
         function C = evaluate(obj, u)
-            u = u(:)';
+            u = u(:).';
             C = zeros(numel(u), 3);
+
             for k = 1:numel(u)
                 uk = obj.clamp(u(k));
                 span = geom.BasisFunctions.FindSpan(obj.n, obj.p, uk, obj.U);
                 N = geom.BasisFunctions.BasisFuns(span, uk, obj.p, obj.U);
+
                 Cw = zeros(1,4);
                 for j = 0:obj.p
                     idx = span - obj.p + j;
@@ -136,38 +154,40 @@ classdef NURBSCurve < handle
             if ~isscalar(u)
                 error('NURBSCurve:derivatives', 'u must be scalar.');
             end
-            u = obj.clamp(u);
-            d = min(d, obj.p);
 
-            span = geom.BasisFunctions.FindSpan(obj.n, obj.p, u, obj.U);
+            u = obj.clamp(u);
+            d = min(max(0, floor(d)), obj.p);
+
+            span  = geom.BasisFunctions.FindSpan(obj.n, obj.p, u, obj.U);
             Nders = geom.BasisFunctions.DersBasisFuns(span, u, obj.p, d, obj.U);
 
             Aders = zeros(d+1, 3);
             wders = zeros(d+1, 1);
+
             for j = 0:obj.p
                 idx = span - obj.p + j;
                 wj = obj.W(idx);
                 Pj = obj.P(idx,:);
-                for k = 0:d
-                    Aders(k+1,:) = Aders(k+1,:) + Nders(k+1,j+1) * wj * Pj;
-                    wders(k+1)   = wders(k+1)   + Nders(k+1,j+1) * wj;
+                for kk = 0:d
+                    Aders(kk+1,:) = Aders(kk+1,:) + Nders(kk+1,j+1) * wj * Pj;
+                    wders(kk+1)   = wders(kk+1)   + Nders(kk+1,j+1) * wj;
                 end
             end
 
             CK = zeros(d+1, 3);
             CK(1,:) = Aders(1,:) / wders(1);
-            for k = 1:d
-                v = Aders(k+1,:);
-                for i = 1:k
-                    v = v - nchoosek(k,i) * wders(i+1) * CK(k-i+1,:);
+            for kk = 1:d
+                v = Aders(kk+1,:);
+                for i = 1:kk
+                    v = v - nchoosek(kk,i) * wders(i+1) * CK(kk-i+1,:);
                 end
-                CK(k+1,:) = v / wders(1);
+                CK(kk+1,:) = v / wders(1);
             end
         end
 
         function D = derivative(obj, u, k)
-            if nargin < 3, k = 1; end
-            u = u(:)';
+            if nargin < 3 || isempty(k), k = 1; end
+            u = u(:).';
             D = zeros(numel(u), 3);
             for i = 1:numel(u)
                 CK = obj.derivatives(u(i), k);
@@ -203,8 +223,12 @@ classdef NURBSCurve < handle
             if nargin < 4 || isempty(nGauss), nGauss = 5; end
             if nargin < 3 || isempty(u1), u1 = obj.domain(2); end
             if nargin < 2 || isempty(u0), u0 = obj.domain(1); end
-            u0 = obj.clamp(u0); u1 = obj.clamp(u1);
-            if u1 < u0, tmp = u0; u0 = u1; u1 = tmp; end
+
+            u0 = obj.clamp(u0);
+            u1 = obj.clamp(u1);
+            if u1 < u0
+                tmp = u0; u0 = u1; u1 = tmp;
+            end
 
             [xi, wi] = geom.NURBSCurve.gaussLegendre(nGauss);
             K = unique(obj.U);
@@ -226,107 +250,59 @@ classdef NURBSCurve < handle
             us = linspace(obj.domain(1), obj.domain(2), max(200, 10*nPts));
             pts = obj.evaluate(us);
             s = [0; cumsum(vecnorm(diff(pts,1,1),2,2))];
+            if s(end) < eps
+                u = linspace(obj.domain(1), obj.domain(2), nPts);
+                return;
+            end
             s = s / s(end);
-            u = interp1(s, us(:), linspace(0,1,nPts)', 'pchip')';
+            u = interp1(s, us(:), linspace(0,1,nPts)', 'pchip').';
         end
     end
 
     methods
         function C2 = insertKnot(obj, u, r)
-        % Exact knot insertion by repeated refinement.
+        % Exact knot insertion by repeated single insertion.
             if nargin < 3 || isempty(r), r = 1; end
             if r < 0 || r ~= floor(r)
                 error('NURBSCurve:insertKnot', 'r must be a nonnegative integer.');
             end
-            if r == 0
-                C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
-                return;
+
+            C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
+            for ii = 1:r
+                C2 = C2.insertKnotOnce(obj.clamp(u));
             end
-            X = repmat(obj.clamp(u), 1, r);
-            C2 = obj.refine(X);
         end
 
         function C2 = refine(obj, X)
-        % Exact curve knot-refinement (A5.4 style vector insertion).
-            X = sort(X(:)');
-            if isempty(X)
-                C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
-                return;
+        % Exact curve knot refinement by repeated single-knot insertion.
+            X = sort(X(:).');
+            C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
+            for ii = 1:numel(X)
+                C2 = C2.insertKnotOnce(X(ii));
             end
-
-            r = numel(X) - 1;
-            n = obj.n;
-            p = obj.p;
-            U = obj.U;
-            Pw = obj.Pw;
-            m = obj.m;
-
-            a = geom.BasisFunctions.FindSpan(n, p, X(1), U);
-            b = geom.BasisFunctions.FindSpan(n, p, X(end), U) + 1;
-
-            nq = n + r + 1;
-            mq = m + r + 1;
-            Ub = zeros(1, mq+1);
-            Qw = zeros(nq+1, 4);
-
-            for j = 0:(a-p)
-                Qw(j+1,:) = Pw(j+1,:);
-            end
-            for j = (b-1):n
-                Qw(j+r+2,:) = Pw(j+1,:);
-            end
-            for j = 0:a
-                Ub(j+1) = U(j+1);
-            end
-            for j = (b+p):m
-                Ub(j+r+2) = U(j+1);
-            end
-
-            i = b + p - 1;
-            k = b + p + r;
-            for j = r:-1:0
-                while X(j+1) <= U(i+1) && i > a
-                    Qw(k-p+1,:) = Pw(i-p+1,:);
-                    Ub(k+1) = U(i+1);
-                    k = k - 1;
-                    i = i - 1;
-                end
-                Qw(k-p+1,:) = Qw(k-p+2,:);
-                for l = 1:p
-                    ind = k - p + l;
-                    alpha = Ub(k+l+1) - X(j+1);
-                    if abs(alpha) < 1e-14
-                        Qw(ind+1,:) = Qw(ind+2,:);
-                    else
-                        alpha = alpha / (Ub(k+l+1) - U(i-p+l+1));
-                        Qw(ind+1,:) = alpha * Qw(ind+1,:) + (1-alpha) * Qw(ind+2,:);
-                    end
-                end
-                Ub(k+1) = X(j+1);
-                k = k - 1;
-            end
-
-            W2 = Qw(:,4);
-            P2 = Qw(:,1:3) ./ W2;
-            C2 = geom.NURBSCurve(P2, p, Ub, W2);
         end
 
         function [Cleft, Cright] = split(obj, u0)
         % Exact split by knot insertion to full multiplicity.
             u0 = obj.clamp(u0);
             tol = 1e-12;
+
             if u0 <= obj.domain(1)+tol || u0 >= obj.domain(2)-tol
                 error('NURBSCurve:split', 'Split parameter must be strictly interior to the active domain.');
             end
+
             s = obj.knotMultiplicity(u0, tol);
             if s < obj.p
                 Cref = obj.insertKnot(u0, obj.p - s);
             else
                 Cref = obj;
             end
+
             U2 = Cref.U;
-            first = find(abs(U2 - u0) < tol, 1, 'first');
-            last  = find(abs(U2 - u0) < tol, 1, 'last');
+            rows = find(abs(U2 - u0) < tol);
+            first = rows(1);
+            last  = rows(end);
+
             idxSplit = last - obj.p;
 
             P1 = Cref.P(1:idxSplit,:);
@@ -358,6 +334,7 @@ classdef NURBSCurve < handle
             breaks = unique(U);
             parts = cell(0,1);
             seg = 0;
+
             for k = 1:numel(breaks)-1
                 if breaks(k+1) <= breaks(k), continue; end
                 seg = seg + 1;
@@ -368,6 +345,15 @@ classdef NURBSCurve < handle
                 Useg = [zeros(1,Cw.p+1), ones(1,Cw.p+1)];
                 Cseg = geom.NURBSCurve(Pseg, Cw.p, Useg, Wseg);
                 parts{seg,1} = struct('curve', Cseg, 'u0', breaks(k), 'u1', breaks(k+1));
+            end
+        end
+
+        function segs = decomposeToBezier(obj)
+        % Compatibility alias for older demos expecting a cell array of curves.
+            parts = obj.decomposeBezier();
+            segs = cell(size(parts));
+            for i = 1:numel(parts)
+                segs{i} = parts{i}.curve;
             end
         end
 
@@ -389,7 +375,6 @@ classdef NURBSCurve < handle
                 error('NURBSCurve:elevate', 'Bezier decomposition failed.');
             end
 
-            % Elevate each Bezier segment in homogeneous space.
             PwAll = [];
             breaks = zeros(nSeg+1,1);
             for s = 1:nSeg
@@ -425,39 +410,179 @@ classdef NURBSCurve < handle
 
         function C2 = transform(obj, T)
             Ph = [obj.P, ones(size(obj.P,1),1)];
-            Qt = (T * Ph')';
+            Qt = (T * Ph.').';
             Q = Qt(:,1:3) ./ Qt(:,4);
             C2 = geom.NURBSCurve(Q, obj.p, obj.U, obj.W);
         end
 
         function C2 = translate(obj, v)
-            Q = obj.P + repmat(v(:)', size(obj.P,1), 1);
+            Q = obj.P + repmat(v(:).', size(obj.P,1), 1);
             C2 = geom.NURBSCurve(Q, obj.p, obj.U, obj.W);
         end
 
         function bbox = boundingBox(obj, nPts)
             if nargin < 2 || isempty(nPts), nPts = 200; end
             pts = obj.evaluate(linspace(obj.domain(1), obj.domain(2), nPts));
-            bbox = [min(pts); max(pts)]';
+            bbox = [min(pts); max(pts)].';
+        end
+    end
+
+    methods
+        function H = evaluateHomogeneous(obj, u)
+        % Exact homogeneous 4D B-spline evaluation.
+            u = u(:).';
+            H = zeros(numel(u), 4);
+
+            for k = 1:numel(u)
+                uk = obj.clamp(u(k));
+                span = geom.BasisFunctions.FindSpan(obj.n, obj.p, uk, obj.U);
+                N = geom.BasisFunctions.BasisFuns(span, uk, obj.p, obj.U);
+                Cw = zeros(1,4);
+                for j = 0:obj.p
+                    idx = span - obj.p + j;
+                    Cw = Cw + N(j+1) * obj.Pw(idx,:);
+                end
+                H(k,:) = Cw;
+            end
+        end
+
+        function g = grevilleAbscissae(obj)
+            g = geom.NURBSCurve.grevilleFromKnotVector(obj.U, obj.p);
+        end
+
+        function tf = isClosed(obj, tol)
+            if nargin < 2 || isempty(tol), tol = 1e-10; end
+            a = obj.evaluate(obj.domain(1));
+            b = obj.evaluate(obj.domain(2));
+            tf = norm(a - b) <= tol;
+        end
+
+        function k = continuityAt(obj, u, tol)
+            if nargin < 3 || isempty(tol), tol = 1e-12; end
+            if abs(u - obj.domain(1)) < tol || abs(u - obj.domain(2)) < tol
+                k = -inf;
+                return;
+            end
+            s = obj.knotMultiplicity(u, tol);
+            k = obj.p - s;
+        end
+
+        function [C2, removed, maxErr] = removeKnot(obj, u, numRemove, tol, nSample)
+        % Remove one or more knot copies by reconstruction / validation.
+            if nargin < 3 || isempty(numRemove), numRemove = 1; end
+            if nargin < 4 || isempty(tol), tol = 1e-10; end
+            if nargin < 5 || isempty(nSample), nSample = max(200, 20*(obj.n+1)); end
+
+            Ccur = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
+            removed = 0;
+            maxErr = 0;
+
+            for it = 1:numRemove
+                [ok, Cnext, err] = Ccur.tryRemoveOneKnot(u, tol, nSample);
+                if ~ok
+                    break;
+                end
+                Ccur = Cnext;
+                removed = removed + 1;
+                maxErr = max(maxErr, err);
+            end
+
+            C2 = Ccur;
+        end
+
+        function [C2, maxErr] = reduceDegree(obj, numTimes, tol, nSample)
+        % Degree reduction by Bezier decomposition + homogeneous LSQ reduction.
+            if nargin < 2 || isempty(numTimes), numTimes = 1; end
+            if nargin < 3 || isempty(tol), tol = inf; end
+            if nargin < 4 || isempty(nSample), nSample = max(300, 30*(obj.n+1)); end
+
+            if numTimes < 0 || numTimes ~= floor(numTimes)
+                error('NURBSCurve:reduceDegree', 'numTimes must be a nonnegative integer.');
+            end
+
+            Ccur = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
+            maxErr = 0;
+
+            for step = 1:numTimes
+                if Ccur.p <= 0
+                    error('NURBSCurve:reduceDegree', 'Cannot reduce degree below zero.');
+                end
+
+                parts = Ccur.decomposeBezier();
+                ph = Ccur.p - 1;
+                nSeg = numel(parts);
+
+                PwAll = [];
+                breaks = zeros(nSeg+1,1);
+                segErr = 0;
+
+                for s = 1:nSeg
+                    Cseg = parts{s}.curve;
+                    PwSeg = Cseg.Pw;
+                    [PwRed, eSeg] = geom.NURBSCurve.reduceBezierHomogeneousLSQ(PwSeg);
+                    segErr = max(segErr, eSeg);
+
+                    if s == 1
+                        PwAll = PwRed;
+                        breaks(1) = parts{s}.u0;
+                    else
+                        PwAll = [PwAll; PwRed(2:end,:)]; %#ok<AGROW>
+                    end
+                    breaks(s+1) = parts{s}.u1;
+                end
+
+                Unew = [repmat(breaks(1), 1, ph+1)];
+                for s = 2:nSeg
+                    Unew = [Unew, repmat(breaks(s), 1, ph)]; %#ok<AGROW>
+                end
+                Unew = [Unew, repmat(breaks(end), 1, ph+1)];
+
+                W2 = PwAll(:,4);
+                if any(W2 <= 0)
+                    error('NURBSCurve:reduceDegree', 'Degree reduction produced nonpositive weights.');
+                end
+
+                P2 = PwAll(:,1:3) ./ W2;
+                Cnext = geom.NURBSCurve(P2, ph, Unew, W2);
+
+                us = geom.NURBSCurve.validationParams(Ccur.U, Cnext.U, nSample);
+                err = max(vecnorm(Ccur.evaluate(us) - Cnext.evaluate(us), 2, 2));
+
+                maxErr = max(maxErr, max(segErr, err));
+                if maxErr > tol
+                    error('NURBSCurve:reduceDegree', ...
+                        'Degree reduction exceeded tolerance: %g > %g.', maxErr, tol);
+                end
+
+                Ccur = Cnext;
+            end
+
+            C2 = Ccur;
         end
     end
 
     methods
         function [u_c, pt_c, d_c] = closestPoint(obj, P, u0)
-            P = P(:)';
+            P = P(:).';
             if nargin < 3 || isempty(u0)
                 u0 = obj.coarseSearchPoint(P, 64);
             end
+
             u = obj.clamp(u0);
             for iter = 1:50
                 CK = obj.derivatives(u, 2);
                 C  = CK(1,:);
                 D1 = CK(2,:);
                 D2 = CK(3,:);
+
                 r  = C - P;
                 f1 = dot(r, D1);
                 f2 = dot(D1, D1) + dot(r, D2);
-                if abs(f2) < 1e-14, break; end
+
+                if abs(f2) < 1e-14
+                    break;
+                end
+
                 un = obj.clamp(u - f1/f2);
                 if abs(un - u) < 1e-12
                     u = un;
@@ -465,6 +590,7 @@ classdef NURBSCurve < handle
                 end
                 u = un;
             end
+
             pt_c = obj.evaluate(u);
             d_c  = norm(pt_c - P);
             u_c  = u;
@@ -472,12 +598,15 @@ classdef NURBSCurve < handle
 
         function [u_all, pt_all, d_all] = closestPointBatch(obj, pts, nCoarse)
             if nargin < 3 || isempty(nCoarse), nCoarse = 64; end
+
             N = size(pts,1);
             u_all = zeros(N,1);
             pt_all = zeros(N,3);
             d_all = zeros(N,1);
+
             seeds = linspace(obj.domain(1), obj.domain(2), nCoarse);
             samp = obj.evaluate(seeds);
+
             for i = 1:N
                 d2 = sum((samp - pts(i,:)).^2, 2);
                 [~, idx] = min(d2);
@@ -494,6 +623,7 @@ classdef NURBSCurve < handle
     methods
         function plot(obj, nPts, varargin)
             if nargin < 2 || isempty(nPts), nPts = 200; end
+
             pa = inputParser;
             addParameter(pa, 'ShowCP', true);
             addParameter(pa, 'ShowKnots', false);
@@ -504,12 +634,15 @@ classdef NURBSCurve < handle
 
             u = linspace(obj.domain(1), obj.domain(2), nPts);
             pts = obj.evaluate(u);
+
             hold on;
             plot3(pts(:,1), pts(:,2), pts(:,3), 'Color', opt.Color, 'LineWidth', opt.LineWidth);
+
             if opt.ShowCP
-                plot3(obj.P(:,1), obj.P(:,2), obj.P(:,3), 'o--', 'Color', [0.6 0.6 0.6], ...
-                    'MarkerFaceColor', 'w', 'MarkerSize', 5);
+                plot3(obj.P(:,1), obj.P(:,2), obj.P(:,3), 'o--', ...
+                    'Color', [0.6 0.6 0.6], 'MarkerFaceColor', 'w', 'MarkerSize', 5);
             end
+
             if opt.ShowKnots
                 uk = unique(obj.U);
                 uk = uk(uk > obj.domain(1) & uk < obj.domain(2));
@@ -518,18 +651,22 @@ classdef NURBSCurve < handle
                     plot3(kp(:,1), kp(:,2), kp(:,3), 'k^', 'MarkerFaceColor', 'k');
                 end
             end
-            axis equal; grid on; xlabel('X'); ylabel('Y'); zlabel('Z');
+
+            axis equal;
+            grid on;
+            xlabel('X'); ylabel('Y'); zlabel('Z');
         end
     end
 
     methods (Static)
         function U = averagingKnotVector(params, p)
-            params = params(:)';
-            m = numel(params) - 1;
-            n = m;
-            U = zeros(1, n+p+2);
+            params = params(:).';
+            n = numel(params) - 1;
+    
+            U = zeros(1, n + p + 2);
             U(1:p+1) = params(1);
             U(end-p:end) = params(end);
+    
             for j = 1:(n-p)
                 U(j+p+1) = sum(params(j+1:j+p)) / p;
             end
@@ -538,8 +675,10 @@ classdef NURBSCurve < handle
         function u = parameterizeData(Q, method)
             if nargin < 2 || isempty(method), method = 'centripetal'; end
             Q = geom.NURBSCurve.ensure3D(Q);
+
             m = size(Q,1) - 1;
             d = zeros(m,1);
+
             for k = 1:m
                 dk = norm(Q(k+1,:) - Q(k,:));
                 switch lower(method)
@@ -551,57 +690,146 @@ classdef NURBSCurve < handle
                         d(k) = sqrt(dk);
                 end
             end
+
             total = sum(d);
             u = zeros(m+1,1);
+
             if total < eps
-                u = linspace(0,1,m+1)';
+                u = linspace(0,1,m+1).';
                 return;
             end
+
             for k = 2:m+1
                 u(k) = u(k-1) + d(k-1)/total;
             end
             u(end) = 1;
         end
 
-        function C = globalInterp(Q, p, method)
+         function C = globalInterp(Q, p, method)
         % Global interpolation of data points with unit weights.
+    
             if nargin < 3 || isempty(method), method = 'centripetal'; end
+    
             Q = geom.NURBSCurve.ensure3D(Q);
             n = size(Q,1) - 1;
+    
             if p > n
-                error('NURBSCurve:globalInterp', 'Degree exceeds number of data points minus one.');
+                error('NURBSCurve:globalInterp', ...
+                    'Degree exceeds number of data points minus one.');
             end
+    
             u = geom.NURBSCurve.parameterizeData(Q, method);
             U = geom.NURBSCurve.averagingKnotVector(u, p);
+    
             A = zeros(n+1, n+1);
-            for k = 1:n+1
-                span = geom.BasisFunctions.FindSpan(n, p, u(k), U);
-                N = geom.BasisFunctions.BasisFuns(span, u(k), p, U);
-                A(k, span-p+1:span+1) = N;
+            for r = 1:n+1
+                span = geom.BasisFunctions.FindSpan(n, p, u(r), U);
+                N = geom.BasisFunctions.BasisFuns(span, u(r), p, U);
+                cols = (span-p):span;
+                A(r, cols) = N;
             end
+    
             P = A \ Q;
+    
+            if size(P,1) ~= n+1 || size(P,2) ~= 3
+                error('NURBSCurve:globalInterp', ...
+                    'Interpolation solve returned a control-point array of size %dx%d, expected %dx3.', ...
+                    size(P,1), size(P,2), n+1);
+            end
+    
             C = geom.NURBSCurve(P, p, U, ones(n+1,1));
         end
 
-        function C = globalLeastSquaresFit(Q, p, nCtrl, method)
+            function C = globalLeastSquaresFit(Q, p, nCtrl, method)
         % Global least-squares fit of data Q with nCtrl control points.
+    
             if nargin < 4 || isempty(method), method = 'centripetal'; end
+    
             Q = geom.NURBSCurve.ensure3D(Q);
-            m = size(Q,1) - 1;
-            n = nCtrl - 1;
-            if n < p
-                error('NURBSCurve:globalLeastSquaresFit', 'Need nCtrl >= p+1.');
+    
+            m = size(Q,1) - 1;     % data index
+            n = nCtrl - 1;         % control-point index
+    
+            if nCtrl < p + 1
+                error('NURBSCurve:globalLeastSquaresFit', ...
+                    'Need at least p+1 control points.');
             end
+            if m < n
+                error('NURBSCurve:globalLeastSquaresFit', ...
+                    'Need at least as many data points as control points.');
+            end
+    
             u = geom.NURBSCurve.parameterizeData(Q, method);
-            U = geom.NURBSCurve.averagingKnotVector(linspace(0,1,n+1)', p);
-            Nmat = zeros(m+1, n+1);
-            for k = 1:m+1
-                span = geom.BasisFunctions.FindSpan(n, p, u(k), U);
-                N = geom.BasisFunctions.BasisFuns(span, u(k), p, U);
-                Nmat(k, span-p+1:span+1) = N;
+    
+            % Averaged knot vector for LSQ fitting
+            U = zeros(1, n + p + 2);
+            U(1:p+1) = 0;
+            U(end-p:end) = 1;
+    
+            if (n-p) >= 1
+                d = (m + 1) / (n - p + 1);
+                for j = 1:(n-p)
+                    jd = j * d;
+                    i = floor(jd);
+                    alpha = jd - i;
+    
+                    i = max(1, min(i, m));
+                    U(j+p+1) = (1-alpha) * u(i) + alpha * u(i+1);
+                end
             end
+    
+            Nmat = zeros(m+1, n+1);
+            for r = 1:m+1
+                span = geom.BasisFunctions.FindSpan(n, p, u(r), U);
+                N = geom.BasisFunctions.BasisFuns(span, u(r), p, U);
+                cols = (span-p):span;
+                Nmat(r, cols) = N;
+            end
+    
             P = Nmat \ Q;
+    
+            if size(P,1) ~= (n+1) || size(P,2) ~= 3
+                error('NURBSCurve:globalLeastSquaresFit', ...
+                    'Least-squares solve returned size %dx%d, expected %dx3.', ...
+                    size(P,1), size(P,2), n+1);
+            end
+    
             C = geom.NURBSCurve(P, p, U, ones(n+1,1));
+    end
+
+        function C = line(P0, P1)
+            P0 = geom.NURBSCurve.ensure3D(P0);
+            P1 = geom.NURBSCurve.ensure3D(P1);
+            P = [P0(1,:); P1(1,:)];
+            C = geom.NURBSCurve(P, 1, [0 0 1 1], [1; 1]);
+        end
+
+        function C = quadraticConic(P0, P1, P2, w1)
+            if nargin < 4 || isempty(w1), w1 = 1; end
+            if w1 <= 0
+                error('NURBSCurve:quadraticConic', 'Middle weight must be positive.');
+            end
+            P0 = geom.NURBSCurve.ensure3D(P0);
+            P1 = geom.NURBSCurve.ensure3D(P1);
+            P2 = geom.NURBSCurve.ensure3D(P2);
+            P = [P0(1,:); P1(1,:); P2(1,:)];
+            W = [1; w1; 1];
+            U = [0 0 0 1 1 1];
+            C = geom.NURBSCurve(P, 2, U, W);
+        end
+    end
+
+    methods (Static)
+        function g = grevilleFromKnotVector(U, p)
+            n = numel(U) - p - 2;
+            g = zeros(n+1,1);
+            if p == 0
+                g(:) = U(1:n+1).';
+                return;
+            end
+            for i = 1:n+1
+                g(i) = sum(U(i+1:i+p)) / p;
+            end
         end
     end
 
@@ -619,8 +847,52 @@ classdef NURBSCurve < handle
             end
         end
 
+        function [PwRed, maxErr] = reduceBezierHomogeneousLSQ(Pw)
+            p = size(Pw,1) - 1;
+            if p < 1
+                error('NURBSCurve:reduceBezierHomogeneousLSQ', 'Bezier degree must be at least 1.');
+            end
+
+            ph = p - 1;
+
+            E = zeros(p+1, ph+1);
+            E(1,1) = 1;
+            E(end,end) = 1;
+            for i = 1:p-1
+                alpha = i / p;
+                E(i+1, i)   = alpha;
+                E(i+1, i+1) = 1 - alpha;
+            end
+
+            PwRed = zeros(ph+1, size(Pw,2));
+            PwRed(1,:)   = Pw(1,:);
+            PwRed(end,:) = Pw(end,:);
+
+            if ph > 1
+                A = E(:,2:end-1);
+                rhs = Pw - E(:,1)*PwRed(1,:) - E(:,end)*PwRed(end,:);
+                X = A \ rhs;
+                PwRed(2:end-1,:) = X;
+            end
+
+            PwElev = E * PwRed;
+            maxErr = max(vecnorm(Pw - PwElev, 2, 2));
+        end
+
+        function us = validationParams(U1, U2, nSample)
+            if nargin < 3 || isempty(nSample), nSample = 400; end
+            b = unique([U1(:); U2(:)]).';
+            mids = 0.5 * (b(1:end-1) + b(2:end));
+            a = max(U1(1), U2(1));
+            z = min(U1(end), U2(end));
+            us = unique([linspace(a, z, nSample), b, mids]);
+            us = us(~isnan(us));
+            us = us(:).';
+        end
+
         function U = normalizeKnotVector(U)
-            a = U(1); b = U(end);
+            a = U(1);
+            b = U(end);
             if abs(b-a) < eps
                 U = zeros(size(U));
             else
@@ -631,11 +903,15 @@ classdef NURBSCurve < handle
         function P = ensure3D(P)
             if size(P,2) == 2
                 P = [P, zeros(size(P,1),1)];
+            elseif size(P,2) == 3
+                % ok
+            elseif isvector(P) && numel(P) == 2
+                P = [reshape(P,1,2), 0];
+            elseif isvector(P) && numel(P) == 3
+                P = reshape(P,1,3);
+            else
+                error('NURBSCurve:ensure3D', 'Input must be Nx2, Nx3, 1x2, or 1x3.');
             end
-        end
-
-        function u = clamp_static(u, dom)
-            u = max(dom(1), min(dom(2), u));
         end
 
         function [x, w] = gaussLegendre(n)
@@ -657,6 +933,118 @@ classdef NURBSCurve < handle
     end
 
     methods (Access = private)
+        function C2 = insertKnotOnce(obj, u)
+        % Exact single knot insertion (Piegl & Tiller, 1-based MATLAB form).
+    
+            p  = obj.p;
+            U  = obj.U;
+            Pw = obj.Pw;
+            n  = obj.n;
+    
+            u = obj.clamp(u);
+    
+            % span is used in the same 1-based convention as the rest of this class
+            span = geom.BasisFunctions.FindSpan(n, p, u, U);
+            s    = obj.knotMultiplicity(u, 1e-12);
+    
+            if s >= p
+                C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
+                return;
+            end
+    
+            % New knot vector: insert u after U(span)
+            Up = zeros(1, numel(U) + 1);
+            Up(1:span) = U(1:span);
+            Up(span+1) = u;
+            Up(span+2:end) = U(span+1:end);
+    
+            % New homogeneous control net
+            Qw = zeros(size(Pw,1) + 1, 4);
+    
+            % Unaffected left block
+            Qw(1:span-p, :) = Pw(1:span-p, :);
+    
+            % Unaffected right block
+            Qw(span-s+1:end, :) = Pw(span-s:end, :);
+    
+            % Updated middle block
+            for j = (span-p+1):(span-s)
+                denom = U(j+p) - U(j);
+                if abs(denom) < 1e-14
+                    alpha = 0.0;
+                else
+                    alpha = (u - U(j)) / denom;
+                end
+                Qw(j,:) = alpha * Pw(j,:) + (1-alpha) * Pw(j-1,:);
+            end
+    
+            if any(diff(Up) < -1e-14)
+                error('NURBSCurve:insertKnotOnce', 'Internal error: generated knot vector is not nondecreasing.');
+            end
+    
+            W2 = Qw(:,4);
+            if any(W2 <= 0)
+                error('NURBSCurve:insertKnotOnce', 'Knot insertion produced nonpositive weights.');
+            end
+    
+            P2 = Qw(:,1:3) ./ W2;
+            C2 = geom.NURBSCurve(P2, p, Up, W2);
+        end
+
+        function [ok, Ccand, maxErr] = tryRemoveOneKnot(obj, u, tol, nSample)
+            ok = false;
+            Ccand = obj;
+            maxErr = inf;
+
+            tolK = 1e-12;
+            idx = find(abs(obj.U - u) < tolK, 1, 'first');
+            if isempty(idx)
+                return;
+            end
+            if idx <= obj.p+1 || idx >= numel(obj.U)-obj.p
+                return;
+            end
+
+            Ucand = obj.U;
+            Ucand(idx) = [];
+
+            n2 = numel(Ucand) - obj.p - 2;
+            if n2 < obj.p
+                return;
+            end
+
+            g = geom.NURBSCurve.grevilleFromKnotVector(Ucand, obj.p);
+            H = obj.evaluateHomogeneous(g);
+
+            A = zeros(n2+1, n2+1);
+            for r = 1:n2+1
+                span = geom.BasisFunctions.FindSpan(n2, obj.p, g(r), Ucand);
+                N = geom.BasisFunctions.BasisFuns(span, g(r), obj.p, Ucand);
+                cols = (span-obj.p+1):(span+1);
+                A(r, cols) = N;
+            end
+
+            if rcond(A) < 1e-13
+                return;
+            end
+
+            Qw = A \ H;
+            if any(Qw(:,4) <= 0)
+                return;
+            end
+
+            Q = Qw(:,1:3) ./ Qw(:,4);
+            Ctest = geom.NURBSCurve(Q, obj.p, Ucand, Qw(:,4));
+
+            us = geom.NURBSCurve.validationParams(obj.U, Ucand, nSample);
+            maxErr = max(vecnorm(obj.evaluate(us) - Ctest.evaluate(us), 2, 2));
+
+            if maxErr <= tol
+                ok = true;
+                Ccand = Ctest;
+            end
+        end
+
         function u = clamp(obj, u)
             u = max(obj.domain(1), min(obj.domain(2), u));
         end
@@ -668,192 +1056,4 @@ classdef NURBSCurve < handle
             u0 = us(idx);
         end
     end
-
-
-    methods
-        function c = continuityAt(obj, u, tol)
-        % CONTINUITYAT  Parametric continuity order at parameter u.
-        %   For an interior knot of multiplicity s, continuity is C^(p-s).
-        %   Outside interior knots, returns Inf.
-            if nargin < 3 || isempty(tol), tol = 1e-12; end
-            dom = obj.domain;
-            if abs(u - dom(1)) < tol || abs(u - dom(2)) < tol
-                c = Inf;
-                return;
-            end
-            s = obj.knotMultiplicity(u, tol);
-            if s == 0
-                c = Inf;
-            else
-                c = obj.p - s;
-            end
-        end
-
-        function tf = isClosed(obj, tol)
-        % ISCLOSED  True if curve endpoints coincide geometrically.
-            if nargin < 2 || isempty(tol), tol = 1e-9; end
-            C0 = obj.evaluate(obj.domain(1));
-            C1 = obj.evaluate(obj.domain(2));
-            tf = norm(C1 - C0) <= tol;
-        end
-
-        function ug = grevilleAbscissae(obj)
-        % GREVILLEABSCISSAE  Greville abscissae of the B-spline basis.
-            n = obj.n; p = obj.p; U = obj.U;
-            ug = zeros(n+1,1);
-            if p == 0
-                ug(:) = U(1:n+1);
-                return;
-            end
-            for i = 0:n
-                ug(i+1) = sum(U(i+2:i+p+1)) / p;
-            end
-        end
-
-        function [Q, errMax, info] = removeKnot(obj, u, numRemove, tol, nSample)
-        % REMOVEKNOT  Tolerance-controlled numerical knot removal.
-        %
-        %   [Q, errMax, info] = removeKnot(u)
-        %   [Q, errMax, info] = removeKnot(u, numRemove, tol, nSample)
-        %
-        %   Attempts to remove up to numRemove copies of knot u while keeping
-        %   the geometric deviation below tol. This is a global numerical
-        %   removal on the homogeneous curve and is intended as a robust
-        %   cleanup tool when exact local removal logic is not available.
-            if nargin < 3 || isempty(numRemove), numRemove = 1; end
-            if nargin < 4 || isempty(tol), tol = 1e-8; end
-            if nargin < 5 || isempty(nSample), nSample = max(200, 20*(obj.n+1)); end
-            if numRemove < 0 || numRemove ~= floor(numRemove)
-                error('NURBSCurve:removeKnot', 'numRemove must be a nonnegative integer.');
-            end
-
-            Q = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
-            errMax = 0;
-            info = struct('requested', numRemove, 'removed', 0, 'finalMultiplicity', Q.knotMultiplicity(u), ...
-                          'accepted', false, 'history', []);
-
-            for k = 1:numRemove
-                s = Q.knotMultiplicity(u);
-                if s == 0
-                    break;
-                end
-                Ucand = Q.U;
-                idx = find(abs(Ucand - u) < 1e-12, 1, 'last');
-                Ucand(idx) = [];
-                % Build candidate by fitting the homogeneous curve on the new knot vector.
-                Qcand = geom.NURBSCurve.fitHomogeneousToKnotVector(Q, Ucand, nSample);
-                % Measure geometric deviation against current curve on the active domain.
-                us = linspace(max(Q.domain(1), Qcand.domain(1)), min(Q.domain(2), Qcand.domain(2)), nSample);
-                if isempty(us) || numel(us) < 2
-                    break;
-                end
-                Pold = Q.evaluate(us);
-                Pnew = Qcand.evaluate(us);
-                e = sqrt(sum((Pnew - Pold).^2, 2));
-                ek = max(e);
-                info.history = [info.history; [k, ek]]; %#ok<AGROW>
-                if ek <= tol
-                    Q = Qcand;
-                    errMax = ek;
-                    info.removed = info.removed + 1;
-                else
-                    errMax = ek;
-                    break;
-                end
-            end
-
-            info.finalMultiplicity = Q.knotMultiplicity(u);
-            info.accepted = info.removed > 0;
-        end
-
-        function [parts, breaks] = subdivideUniform(obj)
-        % SUBDIVIDEUNIFORM  Split into knot spans as curve pieces.
-            uk = unique(obj.U);
-            uk = uk(uk >= obj.domain(1) & uk <= obj.domain(2));
-            parts = {};
-            breaks = uk(:);
-            if numel(uk) < 2
-                return;
-            end
-            Cwork = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
-            parts = cell(numel(uk)-1, 1);
-            for i = 1:numel(uk)-1
-                if uk(i+1) <= uk(i), continue; end
-                if i == 1
-                    [left, right] = Cwork.split(uk(i+1));
-                    parts{i} = left;
-                    Cwork = right;
-                elseif i < numel(uk)-1
-                    local = (uk(i+1) - uk(i)) / (uk(end) - uk(i));
-                    [left, right] = Cwork.split(local);
-                    parts{i} = left;
-                    Cwork = right;
-                else
-                    parts{i} = Cwork;
-                end
-            end
-        end
-
-        function S = sample(obj, u)
-        % SAMPLE  Alias for evaluate; convenient for generic geometry code.
-            S = obj.evaluate(u);
-        end
-    end
-
-    methods (Static)
-        function Q = fitHomogeneousToKnotVector(Csrc, Ucand, nSample)
-        % FITHOMOGENEOUSTOKNOTVECTOR  Reconstruct homogeneous control points
-        % for a target knot vector and the same degree by least squares.
-            p = Csrc.p;
-            n2 = numel(Ucand) - p - 2;
-            if n2 < p
-                error('NURBSCurve:fitHomogeneousToKnotVector', ...
-                    'Target knot vector is invalid for degree p.');
-            end
-            % Sample on the overlapping active domain to avoid endpoint ambiguity.
-            dom = [max(Csrc.U(Csrc.p+1), Ucand(p+1)), min(Csrc.U(end-Csrc.p), Ucand(end-p))];
-            if dom(2) <= dom(1)
-                error('NURBSCurve:fitHomogeneousToKnotVector', ...
-                    'No overlapping active domain between source and candidate.');
-            end
-            us = linspace(dom(1), dom(2), nSample)';
-            H = zeros(nSample, 4);
-            Ps = Csrc.evaluate(us);
-            Ws = zeros(nSample,1);
-            for i = 1:nSample
-                CK = Csrc.derivatives(us(i), 0);
-                % derive weight by evaluating homogeneous denominator directly
-                span = geom.BasisFunctions.FindSpan(Csrc.n, p, us(i), Csrc.U);
-                N = geom.BasisFunctions.BasisFuns(span, us(i), p, Csrc.U);
-                w = 0;
-                for j = 0:p
-                    idx = span - p + j;
-                    w = w + N(j+1) * Csrc.W(idx);
-                end
-                Ws(i) = w;
-                H(i,1:3) = Ps(i,:) * w;
-                H(i,4) = w;
-            end
-            A = geom.NURBSCurve.buildBasisMatrixFromKnotVector(Ucand, p, us);
-            Pw = A \ H;
-            % Enforce positive weights.
-            if any(Pw(:,4) <= 0)
-                Pw(:,4) = max(Pw(:,4), 1e-12);
-            end
-            P = Pw(:,1:3) ./ Pw(:,4);
-            Q = geom.NURBSCurve(P, p, Ucand, Pw(:,4));
-        end
-
-        function A = buildBasisMatrixFromKnotVector(U, p, us)
-            n = numel(U) - p - 2;
-            A = zeros(numel(us), n+1);
-            for k = 1:numel(us)
-                uk = min(max(us(k), U(p+1)), U(end-p));
-                span = geom.BasisFunctions.FindSpan(n, p, uk, U);
-                N = geom.BasisFunctions.BasisFuns(span, uk, p, U);
-                A(k, span-p+1:span+1) = N;
-            end
-        end
-    end
-
 end
