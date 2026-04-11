@@ -995,50 +995,64 @@ classdef NURBSCurve < handle
             ok = false;
             Ccand = obj;
             maxErr = inf;
-
+    
             tolK = 1e-12;
             idx = find(abs(obj.U - u) < tolK, 1, 'first');
             if isempty(idx)
                 return;
             end
+    
+            % Do not remove end-clamping copies here
             if idx <= obj.p+1 || idx >= numel(obj.U)-obj.p
                 return;
             end
-
+    
             Ucand = obj.U;
             Ucand(idx) = [];
-
+    
             n2 = numel(Ucand) - obj.p - 2;
             if n2 < obj.p
                 return;
             end
-
+    
+            % Greville points for the candidate knot vector
             g = geom.NURBSCurve.grevilleFromKnotVector(Ucand, obj.p);
+    
+            % Sample original curve in homogeneous space at those parameters
             H = obj.evaluateHomogeneous(g);
-
+    
+            % Build square interpolation matrix for the candidate curve
             A = zeros(n2+1, n2+1);
-            for r = 1:n2+1
-                span = geom.BasisFunctions.FindSpan(n2, obj.p, g(r), Ucand);
-                N = geom.BasisFunctions.BasisFuns(span, g(r), obj.p, Ucand);
-                cols = (span-obj.p+1):(span+1);
-                A(r, cols) = N;
+            for rr = 1:n2+1
+                span = geom.BasisFunctions.FindSpan(n2, obj.p, g(rr), Ucand);
+                N = geom.BasisFunctions.BasisFuns(span, g(rr), obj.p, Ucand);
+    
+                cols = (span-obj.p):span;   % 1-based convention used elsewhere
+                if cols(1) < 1 || cols(end) > (n2+1)
+                    return;
+                end
+    
+                A(rr, cols) = N;
             end
-
+    
+            if size(A,1) ~= size(A,2)
+                return;
+            end
             if rcond(A) < 1e-13
                 return;
             end
-
+    
             Qw = A \ H;
             if any(Qw(:,4) <= 0)
                 return;
             end
-
+    
             Q = Qw(:,1:3) ./ Qw(:,4);
             Ctest = geom.NURBSCurve(Q, obj.p, Ucand, Qw(:,4));
-
+    
             us = geom.NURBSCurve.validationParams(obj.U, Ucand, nSample);
             maxErr = max(vecnorm(obj.evaluate(us) - Ctest.evaluate(us), 2, 2));
-
+    
             if maxErr <= tol
                 ok = true;
                 Ccand = Ctest;
