@@ -149,13 +149,14 @@ meshLower = Slower.isoMesh(nuWing, nvWing, ...
 PtipUpper = getMeshEdgeLocal(meshUpper, 'jN');
 PtipLower = getMeshEdgeLocal(meshLower, 'jN');
 
-cmp_same = max(vecnorm(PtipUpper - PtipLower, 2, 2));
-cmp_rev  = max(vecnorm(PtipUpper - flipud(PtipLower), 2, 2));
-if cmp_rev < cmp_same
-    meshLower = flipMeshLocal(meshLower, 'u');
-    PtipLower = getMeshEdgeLocal(meshLower, 'jN');
-    fprintf(' Reversed lower surface (u-direction) to align tip edge with upper.\n');
+tipCmp = compareEdgeOrientationLocal(PtipUpper, PtipLower);
+lowerTipOrder = tipCmp.orientation;   % 'same' or 'reversed'
+
+if strcmp(lowerTipOrder, 'reversed')
+    fprintf(' Lower tip edge is reversed relative to upper; using reversed edge ordering for seam ops only.\n');
 end
+
+PtipLower_tip = orientEdgeLikeLocal(PtipLower, lowerTipOrder);
 
 [teEdgeUpper, leEdgeUpper] = detectChordwiseEdgeRolesLocal(meshUpper);
 [teEdgeLower, leEdgeLower] = detectChordwiseEdgeRolesLocal(meshLower);
@@ -169,7 +170,10 @@ fprintf(' detected chordwise roles: WingUpper TE=%s LE=%s; WingLower TE=%s LE=%s
 % the tip from these exact shared primitives.
 PtipUpper = getMeshEdgeLocal(meshUpper, 'jN');
 PtipLower = getMeshEdgeLocal(meshLower, 'jN');
-dTip = vecnorm(PtipUpper - PtipLower, 2, 2);
+PtipLower_tip = orientEdgeLikeLocal(PtipLower, lowerTipOrder);
+
+dTip = vecnorm(PtipUpper - PtipLower_tip, 2, 2);
+
 fprintf(' tip upper/lower gap before closeout: max = %.3e, RMS = %.3e', ...
     max(dTip), sqrt(mean(dTip.^2)));
 
@@ -179,8 +183,8 @@ if nuTip ~= size(PtipUpper,1)
 end
 nuTip = size(PtipUpper,1);
 
-meshTip = buildTipMeshFromEdgesLocal(PtipUpper, PtipLower, nvTip);
-meshTip = orientTipMeshLocal(meshTip, PtipUpper, PtipLower);
+meshTip = buildTipMeshFromEdgesLocal(PtipUpper, PtipLower_tip, nvTip);
+meshTip = orientTipMeshLocal(meshTip, PtipUpper, PtipLower_tip);
 
 auditRepeatedPointLinesLocal(meshTip, 'WingTip');
 auditDegeneratePanelsLocal(meshTip, 'WingTip');
@@ -194,12 +198,13 @@ fprintf(' tip mesh quads   = %d', size(meshTip.connectivity,1));
 %% ------------------------------------------------------------------------
 fprintf('\n--- 6. Build semispan wake network ---\n');
 TEu = getMeshEdgeLocal(meshUpper, teEdgeUpper);
-TEl = getMeshEdgeLocal(meshLower, teEdgeLower);
+TEl_raw = getMeshEdgeLocal(meshLower, teEdgeLower);
+
+teCmp = compareEdgeOrientationLocal(TEu, TEl_raw);
+TEl = orientEdgeLikeLocal(TEl_raw, teCmp.orientation);
+
 dTE = vecnorm(TEu - TEl, 2, 2);
-fprintf(' TE coincidence: max = %.3e, RMS = %.3e', max(dTE), sqrt(mean(dTE.^2)));
-
 TE = 0.5 * (TEu + TEl);
-
 % Force both wing surfaces to use the same TE nodes that the wake uses.
 meshUpper = setMeshEdgeLocal(meshUpper, teEdgeUpper, TE);
 meshLower = setMeshEdgeLocal(meshLower, teEdgeLower, TE);
@@ -593,7 +598,6 @@ function mesh = flipMeshLocal(mesh, dir)
     mesh.connectivity = buildConnectivityLocal(mesh.nu, mesh.nv);
     mesh.normals = [];
 end
-
 function meshTip = buildTipMeshFromEdgesLocal(Pupper, Plower, nClose)
     % Build a structured tip closeout directly from corresponding upper/lower
     % edge samples. Pupper and Plower are [nChord x 3] arrays in the same
@@ -617,11 +621,12 @@ function meshTip = buildTipMeshFromEdgesLocal(Pupper, Plower, nClose)
     meshTip.X = zeros(nClose, nChord);
     meshTip.Y = zeros(nClose, nChord);
     meshTip.Z = zeros(nClose, nChord);
+
     for i = 1:nClose
         Pi = (1 - t(i)) * Pupper + t(i) * Plower;
-        meshTip.X(i,:) = Pi(:,1).';
-        meshTip.Y(i,:) = Pi(:,2).';
-        meshTip.Z(i,:) = Pi(:,3).';
+        meshTip.X(i,:) = Pi(end:-1:1,1).';
+        meshTip.Y(i,:) = Pi(end:-1:1,2).';
+        meshTip.Z(i,:) = Pi(end:-1:1,3).';
     end
 
     meshTip.nu = nClose;
@@ -629,7 +634,7 @@ function meshTip = buildTipMeshFromEdgesLocal(Pupper, Plower, nClose)
     meshTip.connectivity = buildConnectivityLocal(meshTip.nu, meshTip.nv);
     meshTip.normals = [];
 
-    % Keep the midpoint normal roughly +Y when possible.
+    % Diagnostic only: do not flip the mesh here.
     if size(meshTip.X,1) > 1 && size(meshTip.X,2) > 1
         i = max(1, floor(size(meshTip.X,1)/2));
         j = max(1, floor(size(meshTip.X,2)/2));
@@ -638,60 +643,30 @@ function meshTip = buildTipMeshFromEdgesLocal(Pupper, Plower, nClose)
         p01 = [meshTip.X(i,j+1), meshTip.Y(i,j+1), meshTip.Z(i,j+1)];
         n = cross(p10 - p00, p01 - p00);
         if n(2) < 0
-            meshTip.X = flipud(meshTip.X);
-            meshTip.Y = flipud(meshTip.Y);
-            meshTip.Z = flipud(meshTip.Z);
+            warning('buildTipMeshFromEdgesLocal: tip midpoint normal has negative Y; keeping mesh indexing unchanged.');
         end
     end
 end
 
+
 function meshTip = orientTipMeshLocal(meshTip, Pupper, Plower)
-    % Enforce a deterministic tip convention:
-    %   - WingUpper jN matches WingTip i1
-    %   - WingLower jN matches WingTip iN
-    % and prefer reversed traversal along the shared solid-solid joins.
     tol = 1e-10;
-    candidates = cell(1,4);
-    labels = {'identity','flipud','fliplr','flipud+fliplr'};
 
-    candidates{1} = meshTip;
-    candidates{2} = flipMeshRowsLocal(meshTip);
-    candidates{3} = flipMeshColsLocal(meshTip);
-    candidates{4} = flipMeshColsLocal(flipMeshRowsLocal(meshTip));
+    i1 = getMeshEdgeLocal(meshTip, 'i1');
+    iN = getMeshEdgeLocal(meshTip, 'iN');
 
-    bestScore = inf;
-    bestMesh = meshTip;
-    bestLabel = labels{1};
+    c1 = compareEdgeOrientationLocal(i1, Pupper);
+    c2 = compareEdgeOrientationLocal(iN, Plower);
 
-    for k = 1:numel(candidates)
-        M = candidates{k};
-        i1 = getMeshEdgeLocal(M, 'i1');
-        iN = getMeshEdgeLocal(M, 'iN');
-        c1 = compareEdgeSetsLocal(i1, Pupper);
-        c2 = compareEdgeSetsLocal(iN, Plower);
+    fprintf(' Tip alignment check:\n');
+    fprintf('  upper -> i1: err = %.3e (%s)\n', c1.bestError, c1.orientation);
+    fprintf('  lower -> iN: err = %.3e (%s)\n', c2.bestError, c2.orientation);
 
-        orientPenalty = 0;
-        if ~strcmpi(c1.orientation, 'reversed')
-            orientPenalty = orientPenalty + 1;
-        end
-        if ~strcmpi(c2.orientation, 'reversed')
-            orientPenalty = orientPenalty + 1;
-        end
-        score = c1.bestError + c2.bestError + 1e-6 * orientPenalty;
-        if score < bestScore
-            bestScore = score;
-            bestMesh = M;
-            bestLabel = labels{k};
-        end
-    end
-
-    meshTip = bestMesh;
-    c1 = compareEdgeSetsLocal(getMeshEdgeLocal(meshTip, 'i1'), Pupper);
-    c2 = compareEdgeSetsLocal(getMeshEdgeLocal(meshTip, 'iN'), Plower);
-    fprintf(' Tip orientation = %s; upper->i1 err = %.3e (%s), lower->iN err = %.3e (%s)\n', ...
-        bestLabel, c1.bestError, c1.orientation, c2.bestError, c2.orientation);
     if c1.bestError > tol || c2.bestError > tol
-        error('orientTipMeshLocal: could not orient tip cap onto exact wing tip edges.');
+        error('Tip edges do not align with wing edges (geometry mismatch).');
+    end
+    if ~strcmpi(c1.orientation, 'reversed') || ~strcmpi(c2.orientation, 'reversed')
+        error('Tip edges align geometrically but do not satisfy reversed abutting-edge ordering.');
     end
 end
 
@@ -932,4 +907,37 @@ function writePaninAuxLocal(filename, wgsFile, networks, mach, alpha, cbar, span
     fprintf(fid, 'XREF %.8g\n', xref);
     fprintf(fid, 'ZREF %.8g\n', zref);
     fprintf(fid, 'BOUN %s\n', bounStr);
+end
+function cmp = compareEdgeOrientationLocal(P, Q)
+    if size(P,2) ~= 3 || size(Q,2) ~= 3
+        error('compareEdgeOrientationLocal: P and Q must be n-by-3.');
+    end
+    if size(P,1) ~= size(Q,1)
+        error('compareEdgeOrientationLocal: edge lengths must match.');
+    end
+
+    dSame = vecnorm(P - Q, 2, 2);
+    dRev  = vecnorm(P - flipud(Q), 2, 2);
+
+    cmp.sameError = max(dSame);
+    cmp.revError  = max(dRev);
+
+    if cmp.revError < cmp.sameError
+        cmp.orientation = 'reversed';
+        cmp.bestError = cmp.revError;
+    else
+        cmp.orientation = 'same';
+        cmp.bestError = cmp.sameError;
+    end
+end
+
+function Qout = orientEdgeLikeLocal(Qin, orientation)
+    switch lower(strtrim(orientation))
+        case 'same'
+            Qout = Qin;
+        case 'reversed'
+            Qout = flipud(Qin);
+        otherwise
+            error('orientEdgeLikeLocal: orientation must be ''same'' or ''reversed''.');
+    end
 end

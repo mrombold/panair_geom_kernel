@@ -1,0 +1,12 @@
+(f7.0,2f10.4,2f14.5,/,4f14.5,/,4f14.5)
+$title INPUT FILE FOR PanAir (A502-ht2)                                        
+$title Created by PANIN                                                        
+$      force and moment summary
+formoms
+ sol-no     alpha      beta            cl           cdi  more
+            cy            fx            fy            fz  more
+            mx            my            mz            area
+      1    2.0000    0.0000       0.36493       0.00643
+      -0.00000      -0.00631      -0.00000       0.36493
+       0.00000      -0.20073       0.00000        30.99750
+*eof
