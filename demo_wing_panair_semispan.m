@@ -146,14 +146,8 @@ Cup_tip_c = tipCurves{1};
 Clo_tip_c = tipCurves{2};
 Stip = geom.NURBSSurface.ruled(Cup_tip_c, Clo_tip_c);
 
-meshTip_raw = Stip.isoMesh(nuTip, nvTip, ...
-    'SpacingU', spacingUTip, 'SpacingV', spacingVTip);
+meshTip = Stip.isoMesh(nuTip, nvTip, 'SpacingU', spacingUTip, 'SpacingV', spacingVTip);
 
-% Export the tip with the safer LaWGS orientation so the collapse appears
-% on a network edge instead of as repeated-point lines.
-meshTip = transposeStructuredMeshLocal(meshTip_raw);
-
-auditRepeatedPointLinesLocal(meshTip_raw, 'WingTip raw');
 auditRepeatedPointLinesLocal(meshTip, 'WingTip');
 auditDegeneratePanelsLocal(meshTip, 'WingTip');
 
@@ -178,10 +172,13 @@ meshWake = struct();
 meshWake.X = [TE(:,1), TE2(:,1)].';
 meshWake.Y = [TE(:,2), TE2(:,2)].';
 meshWake.Z = [TE(:,3), TE2(:,3)].';
-meshWake.nu = nuWake;
-meshWake.nv = nvWake;
+meshWake.nu = size(meshWake.X,1);
+meshWake.nv = size(meshWake.X,2);
 meshWake.connectivity = buildConnectivityLocal(meshWake.nu, meshWake.nv);
 meshWake.normals = [];
+
+meshWake = transposeStructuredMeshLocal(meshWake);
+
 fprintf(' wake mesh quads = %d\n', size(meshWake.connectivity,1));
 
 %% ------------------------------------------------------------------------
