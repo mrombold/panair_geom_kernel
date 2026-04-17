@@ -48,11 +48,7 @@ classdef MeshWriter
             for k = 1:numel(networks)
                 net = networks{k};
         
-                % Basic checks
-                assert(isfield(net,'X') && isfield(net,'Y') && isfield(net,'Z'), ...
-                    'Network must contain X,Y,Z');
-                assert(isequal(size(net.X), size(net.Y), size(net.Z)), ...
-                    'X,Y,Z sizes must match');
+                geom.MeshWriter.validateNetwork(net, 'toWGS');
         
                 if ~isfield(net,'name') || isempty(net.name)
                     net.name = sprintf('Network_%d', k);
@@ -346,6 +342,337 @@ classdef MeshWriter
             net.name = name;
             net.iSymX = iSymX;
             net.iSymZ = iSymZ;
+            if contains(upper(name), 'WAKE')
+                net.boun = 18;
+            else
+                net.boun = 1;
+            end
+        end
+
+        function report = auditWGSNetworks(networks, varargin)
+            pa = inputParser;
+            addParameter(pa, 'Tolerance', 1e-10);
+            addParameter(pa, 'Verbose', false);
+            parse(pa, varargin{:});
+            opts = pa.Results;
+
+            if ~iscell(networks)
+                tmp = networks;
+                networks = cell(1, numel(tmp));
+                for k = 1:numel(tmp)
+                    networks{k} = tmp(k);
+                end
+            end
+
+            nNet = numel(networks);
+            edgeTable = struct('netIndex', {}, 'netName', {}, 'edgeName', {}, ...
+                'npts', {}, 'collapsed', {}, 'length', {}, 'P', {});
+            idx = 1;
+            edgeNames = {'i1','iN','j1','jN'};
+
+            for k = 1:nNet
+                net = networks{k};
+                geom.MeshWriter.validateNetwork(net, 'auditWGSNetworks');
+                netName = geom.MeshWriter.getNetworkName(net, k);
+                for e = 1:numel(edgeNames)
+                    P = geom.MeshWriter.getNetworkEdge(net, edgeNames{e});
+                    edgeTable(idx).netIndex = k;
+                    edgeTable(idx).netName = netName;
+                    edgeTable(idx).edgeName = edgeNames{e};
+                    edgeTable(idx).npts = size(P,1);
+                    edgeTable(idx).collapsed = geom.MeshWriter.isCollapsedEdge(P, opts.Tolerance);
+                    edgeTable(idx).length = geom.MeshWriter.edgeArcLength(P);
+                    edgeTable(idx).P = P;
+                    idx = idx + 1;
+                end
+            end
+
+            matches = struct('a', {}, 'b', {}, 'sameError', {}, 'revError', {}, ...
+                'bestError', {}, 'orientation', {}, 'withinTol', {});
+            idx = 1;
+            for a = 1:numel(edgeTable)-1
+                for b = a+1:numel(edgeTable)
+                    cmp = geom.MeshWriter.compareEdges(edgeTable(a).P, edgeTable(b).P);
+                    matches(idx).a = a;
+                    matches(idx).b = b;
+                    matches(idx).sameError = cmp.sameError;
+                    matches(idx).revError = cmp.revError;
+                    matches(idx).bestError = cmp.bestError;
+                    matches(idx).orientation = cmp.orientation;
+                    matches(idx).withinTol = cmp.withinTol && (cmp.bestError <= opts.Tolerance);
+                    idx = idx + 1;
+                end
+            end
+
+            report = struct();
+            report.tolerance = opts.Tolerance;
+            report.edges = edgeTable;
+            report.matches = matches;
+
+            if opts.Verbose
+                fprintf('MeshWriter edge audit (tol = %.3e)\n', opts.Tolerance);
+                for a = 1:numel(edgeTable)
+                    ed = edgeTable(a);
+                    fprintf('  %-12s %-2s  n=%3d  len=%.6e', ed.netName, ed.edgeName, ed.npts, ed.length);
+                    if ed.collapsed
+                        fprintf('  [collapsed]');
+                    end
+                    fprintf('\n');
+                end
+                fprintf('  Candidate matches within tolerance:\n');
+                nShown = 0;
+                for m = 1:numel(matches)
+                    if matches(m).withinTol
+                        ea = edgeTable(matches(m).a);
+                        eb = edgeTable(matches(m).b);
+                        fprintf('    %-12s %-2s <-> %-12s %-2s  err=%.3e  mode=%s\n', ...
+                            ea.netName, ea.edgeName, eb.netName, eb.edgeName, ...
+                            matches(m).bestError, matches(m).orientation);
+                        nShown = nShown + 1;
+                    end
+                end
+                if nShown == 0
+                    fprintf('    none\n');
+                end
+            end
+        end
+
+
+        function assertExpectedMatches(networks, expectedPairs, varargin)
+            pa = inputParser;
+            addParameter(pa, 'Tolerance', 1e-10);
+            addParameter(pa, 'RequireReversed', false);
+            parse(pa, varargin{:});
+            opts = pa.Results;
+
+            if ~iscell(networks)
+                tmp = networks;
+                networks = cell(1, numel(tmp));
+                for k = 1:numel(tmp)
+                    networks{k} = tmp(k);
+                end
+            end
+
+            if isempty(expectedPairs)
+                return;
+            end
+
+            if iscell(expectedPairs)
+                pairs = expectedPairs;
+            else
+                error('expectedPairs must be a cell array.');
+            end
+
+            for r = 1:size(pairs,1)
+                nameA = pairs{r,1};
+                edgeA = pairs{r,2};
+                nameB = pairs{r,3};
+                edgeB = pairs{r,4};
+
+                idxA = geom.MeshWriter.findNetworkByName(networks, nameA);
+                idxB = geom.MeshWriter.findNetworkByName(networks, nameB);
+                PA = geom.MeshWriter.getNetworkEdge(networks{idxA}, edgeA);
+                PB = geom.MeshWriter.getNetworkEdge(networks{idxB}, edgeB);
+                cmp = geom.MeshWriter.compareEdges(PA, PB);
+                if ~cmp.withinTol || cmp.bestError > opts.Tolerance
+                    error(['MeshWriter.assertExpectedMatches: expected edge match failed: ' ...
+                        '%s %s <-> %s %s (best err = %.3e, mode = %s).'], ...
+                        char(nameA), char(edgeA), char(nameB), char(edgeB), ...
+                        cmp.bestError, cmp.orientation);
+                end
+                if opts.RequireReversed && ~strcmpi(cmp.orientation, 'reversed')
+                    error(['MeshWriter.assertExpectedMatches: expected reversed orientation failed: ' ...
+                        '%s %s <-> %s %s (err = %.3e, mode = %s).'], ...
+                        char(nameA), char(edgeA), char(nameB), char(edgeB), ...
+                        cmp.bestError, cmp.orientation);
+                end
+                fprintf(' verified edge match: %s %s <-> %s %s  err=%.3e  mode=%s\n', ...
+                    char(nameA), char(edgeA), char(nameB), char(edgeB), ...
+                    cmp.bestError, cmp.orientation);
+            end
+        end
+
+        function assertTopologyRules(networks, rules, varargin)
+            pa = inputParser;
+            addParameter(pa, 'Tolerance', 1e-10);
+            addParameter(pa, 'Verbose', false);
+            parse(pa, varargin{:});
+            opts = pa.Results;
+
+            if ~iscell(networks)
+                tmp = networks;
+                networks = cell(1, numel(tmp));
+                for k = 1:numel(tmp)
+                    networks{k} = tmp(k);
+                end
+            end
+            if isempty(rules)
+                return;
+            end
+            if ~iscell(rules)
+                error('MeshWriter.assertTopologyRules: rules must be a cell array.');
+            end
+
+            report = geom.MeshWriter.auditWGSNetworks(networks, 'Tolerance', opts.Tolerance, 'Verbose', false);
+            edges = report.edges;
+            matches = report.matches;
+
+            % Annotate edge degree using within-tolerance matches.
+            degree = zeros(1, numel(edges));
+            partnerList = cell(1, numel(edges));
+            for m = 1:numel(matches)
+                if matches(m).withinTol && matches(m).bestError <= opts.Tolerance
+                    a = matches(m).a;
+                    b = matches(m).b;
+                    degree(a) = degree(a) + 1;
+                    degree(b) = degree(b) + 1;
+                    partnerList{a}(end+1) = b; %#ok<AGROW>
+                    partnerList{b}(end+1) = a; %#ok<AGROW>
+                end
+            end
+            for e = 1:numel(edges)
+                edges(e).degree = degree(e);
+                edges(e).partners = partnerList{e};
+            end
+
+            % Map rules to edge indices.
+            ruleInfo = struct('netName', {}, 'edgeName', {}, 'kind', {}, 'group', {}, ...
+                'partnerNet', {}, 'partnerEdge', {}, 'edgeIndex', {});
+            for r = 1:size(rules,1)
+                ruleInfo(r).netName = char(rules{r,1});
+                ruleInfo(r).edgeName = char(rules{r,2});
+                ruleInfo(r).kind = lower(strtrim(char(rules{r,3})));
+                ruleInfo(r).group = char(rules{r,4});
+                ruleInfo(r).partnerNet = char(rules{r,5});
+                ruleInfo(r).partnerEdge = char(rules{r,6});
+                ruleInfo(r).edgeIndex = geom.MeshWriter.findEdgeRecordIndex(edges, ruleInfo(r).netName, ruleInfo(r).edgeName);
+            end
+
+            % Regular one-to-one abutments.
+            for r = 1:numel(ruleInfo)
+                rr = ruleInfo(r);
+                if strcmp(rr.kind, 'regular')
+                    idxA = rr.edgeIndex;
+                    idxB = geom.MeshWriter.findEdgeRecordIndex(edges, rr.partnerNet, rr.partnerEdge);
+                    cmp = geom.MeshWriter.compareEdges(edges(idxA).P, edges(idxB).P);
+                    if ~(cmp.withinTol && cmp.bestError <= opts.Tolerance)
+                        error('MeshWriter.assertTopologyRules: regular match failed: %s %s <-> %s %s (err=%.3e, mode=%s).', ...
+                            rr.netName, rr.edgeName, rr.partnerNet, rr.partnerEdge, cmp.bestError, cmp.orientation);
+                    end
+                    if ~strcmpi(cmp.orientation, 'reversed')
+                        error('MeshWriter.assertTopologyRules: regular match must be reversed: %s %s <-> %s %s (err=%.3e, mode=%s).', ...
+                            rr.netName, rr.edgeName, rr.partnerNet, rr.partnerEdge, cmp.bestError, cmp.orientation);
+                    end
+                    if edges(idxA).degree ~= 1
+                        error('MeshWriter.assertTopologyRules: regular edge %s %s has degree %d; expected exactly 1.', ...
+                            rr.netName, rr.edgeName, edges(idxA).degree);
+                    end
+                    if edges(idxB).degree ~= 1
+                        error('MeshWriter.assertTopologyRules: regular edge %s %s has degree %d; expected exactly 1.', ...
+                            rr.partnerNet, rr.partnerEdge, edges(idxB).degree);
+                    end
+                    if opts.Verbose
+                        fprintf(' topology ok (regular): %s %s <-> %s %s  err=%.3e\n', ...
+                            rr.netName, rr.edgeName, rr.partnerNet, rr.partnerEdge, cmp.bestError);
+                    end
+                end
+            end
+
+            % Sharp trailing-edge manifolds.
+            groupCells = {ruleInfo(strcmp({ruleInfo.kind}, 'sharp_te')).group};
+            groups = unique(groupCells);
+            for g = 1:numel(groups)
+                grp = char(groups{g});
+                if isempty(strtrim(grp))
+                    continue;
+                end
+                members = find(strcmp({ruleInfo.kind}, 'sharp_te') & strcmp({ruleInfo.group}, grp));
+                edgeIdx = [ruleInfo(members).edgeIndex];
+                for a = 1:numel(edgeIdx)-1
+                    for b = a+1:numel(edgeIdx)
+                        cmp = geom.MeshWriter.compareEdges(edges(edgeIdx(a)).P, edges(edgeIdx(b)).P);
+                        if ~(cmp.withinTol && cmp.bestError <= opts.Tolerance)
+                            ea = edges(edgeIdx(a));
+                            eb = edges(edgeIdx(b));
+                            error('MeshWriter.assertTopologyRules: sharp_te group %s mismatch: %s %s <-> %s %s (err=%.3e, mode=%s).', ...
+                                grp, ea.netName, ea.edgeName, eb.netName, eb.edgeName, cmp.bestError, cmp.orientation);
+                        end
+                    end
+                end
+                allowed = sort(edgeIdx);
+                for k = 1:numel(edgeIdx)
+                    idxA = edgeIdx(k);
+                    actual = sort(edges(idxA).partners);
+                    if ~isequal(actual, setdiff(allowed, idxA))
+                        ea = edges(idxA);
+                        error('MeshWriter.assertTopologyRules: sharp_te edge %s %s has unexpected partner set.', ...
+                            ea.netName, ea.edgeName);
+                    end
+                    if opts.Verbose
+                        ea = edges(idxA);
+                        fprintf(' topology ok (sharp_te): %s %s  degree=%d\n', ea.netName, ea.edgeName, edges(idxA).degree);
+                    end
+                end
+            end
+
+            % Allowed collapsed edges: must be collapsed and unmatched externally.
+            for r = 1:numel(ruleInfo)
+                rr = ruleInfo(r);
+                if strcmp(rr.kind, 'collapsed')
+                    idxA = rr.edgeIndex;
+                    ea = edges(idxA);
+                    if ~ea.collapsed
+                        error('MeshWriter.assertTopologyRules: edge %s %s was expected to be collapsed but is not.', ...
+                            rr.netName, rr.edgeName);
+                    end
+                    if ea.degree ~= 0
+                        error('MeshWriter.assertTopologyRules: collapsed edge %s %s has %d matches; expected 0.', ...
+                            rr.netName, rr.edgeName, ea.degree);
+                    end
+                    if opts.Verbose
+                        fprintf(' topology ok (collapsed): %s %s\n', rr.netName, rr.edgeName);
+                    end
+                end
+            end
+        end
+
+        function P = getNetworkEdge(net, edgeName)
+            geom.MeshWriter.validateNetwork(net, 'getNetworkEdge');
+            switch lower(strtrim(edgeName))
+                case {'i1','imin','row1','edge4'}
+                    P = [net.X(1,:).',   net.Y(1,:).',   net.Z(1,:).'];
+                case {'in','imax','rowend','edge2'}
+                    P = [net.X(end,:).', net.Y(end,:).', net.Z(end,:).'];
+                case {'j1','jmin','col1','edge1'}
+                    P = [net.X(:,1),     net.Y(:,1),     net.Z(:,1)];
+                case {'jn','jmax','colend','edge3'}
+                    P = [net.X(:,end),   net.Y(:,end),   net.Z(:,end)];
+                otherwise
+                    error('MeshWriter.getNetworkEdge: unknown edge name "%s".', edgeName);
+            end
+        end
+
+        function cmp = compareEdges(P, Q)
+            cmp = struct('sameError', inf, 'revError', inf, 'bestError', inf, ...
+                'orientation', 'none', 'withinTol', false);
+            if size(P,2) ~= 3 || size(Q,2) ~= 3
+                return;
+            end
+            if size(P,1) ~= size(Q,1)
+                return;
+            end
+            dSame = vecnorm(P - Q, 2, 2);
+            dRev  = vecnorm(P - flipud(Q), 2, 2);
+            cmp.sameError = max(dSame);
+            cmp.revError = max(dRev);
+            if cmp.sameError <= cmp.revError
+                cmp.bestError = cmp.sameError;
+                cmp.orientation = 'same';
+            else
+                cmp.bestError = cmp.revError;
+                cmp.orientation = 'reversed';
+            end
+            cmp.withinTol = isfinite(cmp.bestError);
         end
 
         function checkNormals(mesh)
@@ -373,6 +700,79 @@ classdef MeshWriter
                 fprintf(' WARNING: normals may need flipping.\n');
             end
         end
+
+        function n = averageNetworkNormal(net)
+            X = net.X; Y = net.Y; Z = net.Z;
+        
+            acc = [0 0 0];
+            cnt = 0;
+        
+            for i = 1:(size(X,1)-1)
+                for j = 1:(size(X,2)-1)
+        
+                    p00 = [X(i,j),   Y(i,j),   Z(i,j)];
+                    p10 = [X(i+1,j), Y(i+1,j), Z(i+1,j)];
+                    p01 = [X(i,j+1), Y(i,j+1), Z(i,j+1)];
+        
+                    v1 = p10 - p00;
+                    v2 = p01 - p00;
+        
+                    nloc = cross(v1, v2);
+                    mag = norm(nloc);
+        
+                    if mag > 0
+                        acc = acc + nloc / mag;
+                        cnt = cnt + 1;
+                    end
+                end
+            end
+        
+            if cnt > 0
+                n = acc / cnt;
+                n = n / norm(n);
+            else
+                n = [0 0 0];
+            end
+        end
+
+        function mesh = flipMesh(mesh, dir)
+            switch lower(dir)
+                case 'u'
+                    mesh.X = flipud(mesh.X);
+                    mesh.Y = flipud(mesh.Y);
+                    mesh.Z = flipud(mesh.Z);
+                case 'v'
+                    mesh.X = fliplr(mesh.X);
+                    mesh.Y = fliplr(mesh.Y);
+                    mesh.Z = fliplr(mesh.Z);
+                otherwise
+                    error('flipMesh: dir must be u or v');
+            end
+        end
+        function mesh = enforceNormalDirection(mesh, expected)
+            n = geom.MeshWriter.averageNetworkNormal(mesh);
+        
+            switch lower(expected)
+                case 'up'
+                    if n(3) < 0
+                        mesh = geom.MeshWriter.flipMesh(mesh, 'u');
+                    end
+        
+                case 'down'
+                    if n(3) > 0
+                        mesh = geom.MeshWriter.flipMesh(mesh, 'u');
+                    end
+        
+                case 'outboard'
+                    if n(2) < 0
+                        mesh = geom.MeshWriter.flipMesh(mesh, 'u');
+                    end
+        
+                otherwise
+                    error('Unknown expected normal direction');
+            end
+        end
+
     end
 
     methods (Static, Access = private)
@@ -493,6 +893,64 @@ classdef MeshWriter
             if dot(ncell, navg) < 0
                 ids = [ids(1), ids(4), ids(3), ids(2)];
             end
+        end
+
+        function tf = isCollapsedEdge(P, tol)
+            if nargin < 2 || isempty(tol)
+                tol = 1e-12;
+            end
+            if isempty(P)
+                tf = true;
+                return;
+            end
+            tf = max(vecnorm(P - P(1,:), 2, 2)) <= tol;
+        end
+
+        function L = edgeArcLength(P)
+            if size(P,1) < 2
+                L = 0;
+                return;
+            end
+            L = sum(vecnorm(diff(P,1,1), 2, 2));
+        end
+
+
+        function idx = findEdgeRecordIndex(edges, netName, edgeName)
+            idx = [];
+            targetNet = upper(strtrim(char(netName)));
+            targetEdge = upper(strtrim(char(edgeName)));
+            for k = 1:numel(edges)
+                if strcmpi(edges(k).netName, targetNet) && strcmpi(edges(k).edgeName, targetEdge)
+                    idx = k;
+                    return;
+                end
+            end
+            error('MeshWriter.findEdgeRecordIndex: edge %s %s not found.', char(netName), char(edgeName));
+        end
+
+        function idx = findNetworkByName(networks, name)
+            idx = [];
+            target = upper(strtrim(char(name)));
+            for k = 1:numel(networks)
+                thisName = geom.MeshWriter.getNetworkName(networks{k}, k);
+                if strcmpi(thisName, target)
+                    idx = k;
+                    return;
+                end
+            end
+            error('MeshWriter.findNetworkByName: network "%s" not found.', char(name));
+        end
+
+        function name = getNetworkName(net, k)
+            if nargin < 2
+                k = 1;
+            end
+            if isfield(net, 'name') && ~isempty(net.name)
+                name = char(net.name);
+            else
+                name = sprintf('Network_%d', k);
+            end
+            name = upper(strtrim(name));
         end
 
         function [n, area2] = triNormal(V1, V2, V3)
