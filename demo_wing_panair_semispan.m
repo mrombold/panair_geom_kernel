@@ -219,7 +219,8 @@ netWake  = geom.MeshWriter.meshToNetwork(meshWake,  'WingWake',  0, 0);
 
 geom.MeshWriter.toWGS({netUpper, netLower, netTip, netWake}, wgsFile);
 
-writePaninAuxLocal(auxFile, wgsFile, mach, alpha, cbar, span, sref, xref, zref);
+nets = {netUpper, netLower, netTip, netWake};
+writePaninAuxLocal(auxFile, wgsFile, nets, mach, alpha, cbar, span, sref, xref, zref);
 
 fprintf(' wrote WGS: %s\n', wgsFile);
 fprintf(' wrote AUX: %s\n', auxFile);
@@ -423,7 +424,7 @@ function conn = buildConnectivityLocal(nu, nv)
     end
 end
 
-function writePaninAuxLocal(filename, wgsFile, mach, alpha, cbar, span, sref, xref, zref)
+function writePaninAuxLocal(filename, wgsFile, networks, mach, alpha, cbar, span, sref, xref, zref)
     [~, name, ext] = fileparts(wgsFile);
     wgsBase = [name ext];
 
@@ -435,6 +436,37 @@ function writePaninAuxLocal(filename, wgsFile, mach, alpha, cbar, span, sref, xr
     else
         error('alpha must be numeric.');
     end
+
+    if ~iscell(networks)
+        tmp = networks;
+        networks = cell(1, numel(tmp));
+        for k = 1:numel(tmp)
+            networks{k} = tmp(k);
+        end
+    end
+
+    % Build one BOUN entry per network, in WGS export order.
+    % Default: solid surface -> 1
+    % Wake-like network name -> 18
+    bounVals = zeros(1, numel(networks));
+    for k = 1:numel(networks)
+        net = networks{k};
+
+        netName = '';
+        if isfield(net, 'name') && ~isempty(net.name)
+            netName = char(net.name);
+        end
+        netNameU = upper(strtrim(netName));
+
+        if contains(netNameU, 'WAKE')
+            bounVals(k) = 18;
+        else
+            bounVals(k) = 1;
+        end
+    end
+
+    bounStr = sprintf('%d ', bounVals);
+    bounStr = strtrim(bounStr);
 
     fid = fopen(filename, 'w');
     if fid == -1
@@ -451,9 +483,5 @@ function writePaninAuxLocal(filename, wgsFile, mach, alpha, cbar, span, sref, xr
     fprintf(fid, 'SREF %.8g\n', sref);
     fprintf(fid, 'XREF %.8g\n', xref);
     fprintf(fid, 'ZREF %.8g\n', zref);
-
-    % This matches the pyPanair tutorial pattern for a wake network.
-    % If panin expects a different wake-network index range for your case,
-    % adjust this line after the first trial run.
-    fprintf(fid, 'BOUN 1 1 18\n');
+    fprintf(fid, 'BOUN %s\n', bounStr);
 end
