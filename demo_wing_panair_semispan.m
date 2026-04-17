@@ -37,7 +37,7 @@ dihedralDeg = 5.0;
 loftDegree  = 1;     % root + tip only
 
 % Mesh density
-nuWing = 41; % chordwise points
+nuWing = 21; % chordwise points
 nvWing = 21; % spanwise points
 nChordTip = 25; % requested tip-cap chordwise points (will be overridden to exact wing-edge count)
 nuTip=nChordTip;
@@ -45,7 +45,7 @@ nvTip     = 5;  % upper->lower resolution on the tip cap
 nuWake = 2;  % two streamwise wake lines
 nvWake = nvWing; % same spanwise discretization as wing TE
 
-spacingUWing = 'cosine';
+spacingUWing = 'linear';
 spacingVWing = 'linear';
 spacingUTip  = 'uniform'; % use milder end clustering on the tip cap
 spacingVTip  = 'linear';
@@ -129,8 +129,14 @@ fprintf('\n--- 4. Build upper / lower wing surfaces ---\n');
 Supper = geom.NURBSSurface.loft({Cup_root, Cup_tip}, loftDegree, 'chord');
 Slower = geom.NURBSSurface.loft({Clo_root, Clo_tip}, loftDegree, 'chord');
 
+% Fix surface handedness before meshing so the mesh normals follow the
+% intended upper/lower orientation and the later edge matching logic does
+% not have to fight post-mesh flips.
+[Supper, upperSurfLabel, nSU] = orientSurfaceNormalLocal(Supper, 'up',   'WingUpper');
+[Slower, lowerSurfLabel, nSL] = orientSurfaceNormalLocal(Slower, 'down', 'WingLower');
+
 %% ------------------------------------------------------------------------
-% 5) Mesh wing surfaces and build a ruled-surface tip with reduced chordwise density
+% 5) Mesh wing surfaces and build exact shared-edge tip cap
 %% ------------------------------------------------------------------------
 fprintf('5. Mesh wing surfaces and build exact shared-edge tip cap ---');
 meshUpper = Supper.isoMesh(nuWing, nvWing, ...
@@ -138,18 +144,37 @@ meshUpper = Supper.isoMesh(nuWing, nvWing, ...
 meshLower = Slower.isoMesh(nuWing, nvWing, ...
     'SpacingU', spacingUWing, 'SpacingV', spacingVWing);
 
-% Canonical sampled tip edges: sample once from the wing meshes and reuse
-% those exact node sequences on the tip cap. This is the key shared-
-% primitive rule for robust PANAIR abutments.
-PtipUpper = [meshUpper.X(:,end), meshUpper.Y(:,end), meshUpper.Z(:,end)];
-PtipLower = [meshLower.X(:,end), meshLower.Y(:,end), meshLower.Z(:,end)];
+% Align lower-surface chordwise indexing with upper before detecting TE/LE
+% roles or constructing shared-edge patches.
+PtipUpper = getMeshEdgeLocal(meshUpper, 'jN');
+PtipLower = getMeshEdgeLocal(meshLower, 'jN');
 
+cmp_same = max(vecnorm(PtipUpper - PtipLower, 2, 2));
+cmp_rev  = max(vecnorm(PtipUpper - flipud(PtipLower), 2, 2));
+if cmp_rev < cmp_same
+    meshLower = flipMeshLocal(meshLower, 'u');
+    PtipLower = getMeshEdgeLocal(meshLower, 'jN');
+    fprintf(' Reversed lower surface (u-direction) to align tip edge with upper.\n');
+end
+
+[teEdgeUpper, leEdgeUpper] = detectChordwiseEdgeRolesLocal(meshUpper);
+[teEdgeLower, leEdgeLower] = detectChordwiseEdgeRolesLocal(meshLower);
+
+fprintf(' surface normals: WingUpper=%s [%.3f %.3f %.3f], WingLower=%s [%.3f %.3f %.3f]', ...
+    upperSurfLabel, nSU(1), nSU(2), nSU(3), lowerSurfLabel, nSL(1), nSL(2), nSL(3));
+fprintf(' detected chordwise roles: WingUpper TE=%s LE=%s; WingLower TE=%s LE=%s', ...
+    teEdgeUpper, leEdgeUpper, teEdgeLower, leEdgeLower);
+
+% Re-extract final tip edges after any lower indexing correction and build
+% the tip from these exact shared primitives.
+PtipUpper = getMeshEdgeLocal(meshUpper, 'jN');
+PtipLower = getMeshEdgeLocal(meshLower, 'jN');
 dTip = vecnorm(PtipUpper - PtipLower, 2, 2);
-fprintf(' tip upper/lower gap before closeout: max = %.3e, RMS = %.3e\n', ...
+fprintf(' tip upper/lower gap before closeout: max = %.3e, RMS = %.3e', ...
     max(dTip), sqrt(mean(dTip.^2)));
 
 if nuTip ~= size(PtipUpper,1)
-    fprintf(' NOTE: overriding nuTip from %d to %d so the tip uses the exact wing-edge nodes.\n', ...
+    fprintf(' NOTE: overriding nuTip from %d to %d so the tip uses the exact wing-edge nodes.', ...
         nuTip, size(PtipUpper,1));
 end
 nuTip = size(PtipUpper,1);
@@ -165,20 +190,19 @@ fprintf(' lower mesh quads = %d', size(meshLower.connectivity,1));
 fprintf(' tip mesh quads   = %d', size(meshTip.connectivity,1));
 
 %% ------------------------------------------------------------------------
-% 6) Build a simple wake sheet from the common trailing edge
+% 6) Build semispan wake network
 %% ------------------------------------------------------------------------
 fprintf('\n--- 6. Build semispan wake network ---\n');
-TEu = [meshUpper.X(end,:).', meshUpper.Y(end,:).', meshUpper.Z(end,:).'];
-TEl = [meshLower.X(end,:).', meshLower.Y(end,:).', meshLower.Z(end,:).'];
+TEu = getMeshEdgeLocal(meshUpper, teEdgeUpper);
+TEl = getMeshEdgeLocal(meshLower, teEdgeLower);
 dTE = vecnorm(TEu - TEl, 2, 2);
-fprintf(' TE coincidence: max = %.3e, RMS = %.3e\n', max(dTE), sqrt(mean(dTE.^2)));
+fprintf(' TE coincidence: max = %.3e, RMS = %.3e', max(dTE), sqrt(mean(dTE.^2)));
 
-TE      = 0.5 * (TEu + TEl); % canonical common trailing edge
+TE = 0.5 * (TEu + TEl);
 
-% Force the wing surfaces themselves to use the same TE nodes that the wake
-% will use. This makes the shared edge exact, not merely close.
-meshUpper = setMeshEdgeLocal(meshUpper, 'iN', TE);
-meshLower = setMeshEdgeLocal(meshLower, 'iN', TE);
+% Force both wing surfaces to use the same TE nodes that the wake uses.
+meshUpper = setMeshEdgeLocal(meshUpper, teEdgeUpper, TE);
+meshLower = setMeshEdgeLocal(meshLower, teEdgeLower, TE);
 
 wakeDir = wakeXDir(:).' / norm(wakeXDir);
 TE2     = TE + wakeLength * wakeDir;
@@ -196,55 +220,18 @@ meshWake = transposeStructuredMeshLocal(meshWake);
 
 fprintf(' wake mesh quads = %d\n', size(meshWake.connectivity,1));
 
-
-
 %% ------------------------------------------------------------------------
-% 7) Enforce network normal directions and then re-harmonize shared edges
+% 7) Final normal diagnostics
 %% ------------------------------------------------------------------------
-fprintf('--- 7. Enforce network normal directions and re-harmonize shared edges ---');
-
-% Preserve intended edge roles while correcting handedness. In particular,
-% keep the wing trailing edge on iN so the sharp-TE manifold stays stable.
-PtipUpper_ref = getMeshEdgeLocal(meshUpper, 'jN');
-PtipLower_ref = getMeshEdgeLocal(meshLower, 'jN');
-TE_ref        = getMeshEdgeLocal(meshUpper, 'iN');
-
-meshUpper = orientWingSurfaceLocal(meshUpper, 'up',   PtipUpper_ref, TE_ref, 'WingUpper');
-meshLower = orientWingSurfaceLocal(meshLower, 'down', PtipLower_ref, TE_ref, 'WingLower');
-
-% Rebuild the canonical TE after final upper/lower orientations and force
-% both surfaces to use it exactly before re-creating the wake.
-TEu = getMeshEdgeLocal(meshUpper, 'iN');
-TEl = getMeshEdgeLocal(meshLower, 'iN');
-TE  = 0.5 * (TEu + TEl);
-meshUpper = setMeshEdgeLocal(meshUpper, 'iN', TE);
-meshLower = setMeshEdgeLocal(meshLower, 'iN', TE);
-
-wakeDir = wakeXDir(:).' / norm(wakeXDir);
-TE2     = TE + wakeLength * wakeDir;
-meshWake = struct();
-meshWake.X = [TE(:,1), TE2(:,1)].';
-meshWake.Y = [TE(:,2), TE2(:,2)].';
-meshWake.Z = [TE(:,3), TE2(:,3)].';
-meshWake.nu = size(meshWake.X,1);
-meshWake.nv = size(meshWake.X,2);
-meshWake.connectivity = buildConnectivityLocal(meshWake.nu, meshWake.nv);
-meshWake.normals = [];
-meshWake = transposeStructuredMeshLocal(meshWake);
-
-% Re-orient the tip against the final wing edges and require an outboard
-% average normal at the same time.
-PtipUpper = getMeshEdgeLocal(meshUpper, 'jN');
-PtipLower = getMeshEdgeLocal(meshLower, 'jN');
-meshTip   = orientTipMeshWithNormalLocal(meshTip, PtipUpper, PtipLower, 'outboard');
-
+fprintf('--- 7. Final network normals ---\n');
 nU = geom.MeshWriter.averageNetworkNormal(meshUpper);
 nL = geom.MeshWriter.averageNetworkNormal(meshLower);
 nT = geom.MeshWriter.averageNetworkNormal(meshTip);
 
-fprintf(' WingUpper normal = [%.3f %.3f %.3f]', nU);
-fprintf(' WingLower normal = [%.3f %.3f %.3f]', nL);
-fprintf(' WingTip   normal = [%.3f %.3f %.3f]', nT);
+fprintf(' WingUpper normal = [%.3f %.3f %.3f]\n', nU);
+fprintf(' WingLower normal = [%.3f %.3f %.3f]\n', nL);
+fprintf(' WingTip   normal = [%.3f %.3f %.3f]\n', nT);
+
 %% ------------------------------------------------------------------------
 % 7) Plot geometry and networks
 %% ------------------------------------------------------------------------
@@ -284,8 +271,8 @@ report = geom.MeshWriter.auditWGSNetworks(nets, 'Tolerance', 1e-10, 'Verbose', t
 topologyRules = {
     'WingUpper', 'jN', 'regular',   'TipCloseout', 'WingTip',  'i1';
     'WingLower', 'jN', 'regular',   'TipCloseout', 'WingTip',  'iN';
-    'WingUpper', 'iN', 'sharp_te',  'TrailingEdge', '',         '';
-    'WingLower', 'iN', 'sharp_te',  'TrailingEdge', '',         '';
+    'WingUpper', teEdgeUpper, 'sharp_te',  'TrailingEdge', '',         '';
+    'WingLower', teEdgeLower, 'sharp_te',  'TrailingEdge', '',         '';
     'WingWake',  'j1', 'sharp_te',  'TrailingEdge', '',         '';
     'WingTip',   'j1', 'collapsed', 'TipLE',        '',         '';
     'WingTip',   'jN', 'collapsed', 'TipTE',        '',         ''};
@@ -492,6 +479,119 @@ function conn = buildConnectivityLocal(nu, nv)
             q = q + 1;
         end
     end
+end
+
+
+function [Sout, labelOut, nOut] = orientSurfaceNormalLocal(Sin, expectedNormal, label)
+    variants = {Sin, Sin.flipNormals()};
+    labels   = {'none', 'flipNormals'};
+
+    bestIdx = 1;
+    bestPenalty = inf;
+    for k = 1:numel(variants)
+        n = sampleSurfaceNormalLocal(variants{k});
+        p = normalPenaltyLocal(n, expectedNormal);
+        if p < bestPenalty
+            bestPenalty = p;
+            bestIdx = k;
+        end
+    end
+
+    Sout = variants{bestIdx};
+    labelOut = labels{bestIdx};
+    nOut = sampleSurfaceNormalLocal(Sout);
+
+    if normalPenaltyLocal(nOut, expectedNormal) > 0
+        error('orientSurfaceNormalLocal: could not satisfy requested normal for %s.', label);
+    end
+end
+
+function n = sampleSurfaceNormalLocal(S)
+    % Sample near the middle of the parametric domain and use first partials.
+    udom = S.domainU;
+    vdom = S.domainV;
+
+    u = 0.5 * (udom(1) + udom(2));
+    v = 0.5 * (vdom(1) + vdom(2));
+
+    % Get derivative tensor up to first order.
+    SKL = S.derivatives(u, v, 1);
+
+    % SKL{k+1,l+1} corresponds to d^(k+l)S / du^k dv^l
+    Su = SKL{2,1};   % dS/du
+    Sv = SKL{1,2};   % dS/dv
+
+    n = cross(Su, Sv);
+    nn = norm(n);
+
+    if nn < 1e-14
+        % fallback: try a slightly perturbed point
+        du = 1e-3 * max(udom(2) - udom(1), 1);
+        dv = 1e-3 * max(vdom(2) - vdom(1), 1);
+        u2 = min(max(u + du, udom(1)), udom(2));
+        v2 = min(max(v + dv, vdom(1)), vdom(2));
+
+        SKL = S.derivatives(u2, v2, 1);
+        Su = SKL{2,1};
+        Sv = SKL{1,2};
+
+        n = cross(Su, Sv);
+        nn = norm(n);
+    end
+
+    if nn < 1e-14
+        error('sampleSurfaceNormalLocal: could not compute a reliable surface normal.');
+    end
+
+    n = n / nn;
+end
+
+function p = normalPenaltyLocal(n, expectedNormal)
+    switch lower(strtrim(expectedNormal))
+        case 'up'
+            p = double(n(3) < 0);
+        case 'down'
+            p = double(n(3) > 0);
+        case 'outboard'
+            p = double(n(2) < 0);
+        otherwise
+            error('Unknown expected normal direction: %s', expectedNormal);
+    end
+end
+
+function [teEdge, leEdge] = detectChordwiseEdgeRolesLocal(mesh)
+    e1 = getMeshEdgeLocal(mesh, 'i1');
+    eN = getMeshEdgeLocal(mesh, 'iN');
+
+    x1 = mean(e1(:,1));
+    xN = mean(eN(:,1));
+
+    if xN >= x1
+        teEdge = 'iN';
+        leEdge = 'i1';
+    else
+        teEdge = 'i1';
+        leEdge = 'iN';
+    end
+end
+
+function mesh = flipMeshLocal(mesh, dir)
+    switch lower(strtrim(dir))
+        case 'u'
+            mesh.X = flipud(mesh.X);
+            mesh.Y = flipud(mesh.Y);
+            mesh.Z = flipud(mesh.Z);
+        case 'v'
+            mesh.X = fliplr(mesh.X);
+            mesh.Y = fliplr(mesh.Y);
+            mesh.Z = fliplr(mesh.Z);
+        otherwise
+            error('flipMeshLocal: dir must be ''u'' or ''v''.');
+    end
+    mesh.nu = size(mesh.X,1);
+    mesh.nv = size(mesh.X,2);
+    mesh.connectivity = buildConnectivityLocal(mesh.nu, mesh.nv);
+    mesh.normals = [];
 end
 
 function meshTip = buildTipMeshFromEdgesLocal(Pupper, Plower, nClose)
@@ -832,99 +932,4 @@ function writePaninAuxLocal(filename, wgsFile, networks, mach, alpha, cbar, span
     fprintf(fid, 'XREF %.8g\n', xref);
     fprintf(fid, 'ZREF %.8g\n', zref);
     fprintf(fid, 'BOUN %s\n', bounStr);
-end
-
-
-function mesh = orientWingSurfaceLocal(mesh, expectedNormal, PtipRef, PteRef, label)
-    variants = {mesh, flipMeshRowsLocal(mesh), flipMeshColsLocal(mesh), flipMeshColsLocal(flipMeshRowsLocal(mesh))};
-    labels   = {'none', 'flipud', 'fliplr', 'flipud+fliplr'};
-
-    bestScore = inf;
-    bestMesh  = mesh;
-    bestLabel = labels{1};
-
-    for k = 1:numel(variants)
-        M = variants{k};
-        n = geom.MeshWriter.averageNetworkNormal(M);
-        signPenalty = normalPenaltyLocal(n, expectedNormal);
-        cTip = compareEdgeSetsLocal(getMeshEdgeLocal(M, 'jN'), PtipRef);
-        cTE  = compareEdgeSetsLocal(getMeshEdgeLocal(M, 'iN'), PteRef);
-        score = 1e6 * signPenalty + 1e3 * cTE.bestError + cTip.bestError;
-        if score < bestScore
-            bestScore = score;
-            bestMesh  = M;
-            bestLabel = labels{k};
-        end
-    end
-
-    mesh = bestMesh;
-    n = geom.MeshWriter.averageNetworkNormal(mesh);
-    cTip = compareEdgeSetsLocal(getMeshEdgeLocal(mesh, 'jN'), PtipRef);
-    cTE  = compareEdgeSetsLocal(getMeshEdgeLocal(mesh, 'iN'), PteRef);
-    fprintf(' %s orientation = %s; tip@jN err = %.3e (%s), TE@iN err = %.3e (%s)', ...
-        label, bestLabel, cTip.bestError, cTip.orientation, cTE.bestError, cTE.orientation);
-
-    if normalPenaltyLocal(n, expectedNormal) > 0
-        error('orientWingSurfaceLocal: could not satisfy expected normal for %s.', label);
-    end
-    if cTE.bestError > 1e-10
-        error('orientWingSurfaceLocal: could not preserve TE on iN for %s.', label);
-    end
-end
-
-function meshTip = orientTipMeshWithNormalLocal(meshTip, Pupper, Plower, expectedNormal)
-    tol = 1e-10;
-    variants = {meshTip, flipMeshRowsLocal(meshTip), flipMeshColsLocal(meshTip), flipMeshColsLocal(flipMeshRowsLocal(meshTip))};
-    labels   = {'none', 'flipud', 'fliplr', 'flipud+fliplr'};
-
-    bestScore = inf;
-    bestMesh  = meshTip;
-    bestLabel = labels{1};
-
-    for k = 1:numel(variants)
-        M = variants{k};
-        c1 = compareEdgeSetsLocal(getMeshEdgeLocal(M, 'i1'), Pupper);
-        c2 = compareEdgeSetsLocal(getMeshEdgeLocal(M, 'iN'), Plower);
-        n  = geom.MeshWriter.averageNetworkNormal(M);
-        orientPenalty = 0;
-        if ~strcmpi(c1.orientation, 'reversed'), orientPenalty = orientPenalty + 1; end
-        if ~strcmpi(c2.orientation, 'reversed'), orientPenalty = orientPenalty + 1; end
-        signPenalty = normalPenaltyLocal(n, expectedNormal);
-        score = 1e6 * signPenalty + c1.bestError + c2.bestError + 1e-6 * orientPenalty;
-        if score < bestScore
-            bestScore = score;
-            bestMesh = M;
-            bestLabel = labels{k};
-        end
-    end
-
-    meshTip = bestMesh;
-    c1 = compareEdgeSetsLocal(getMeshEdgeLocal(meshTip, 'i1'), Pupper);
-    c2 = compareEdgeSetsLocal(getMeshEdgeLocal(meshTip, 'iN'), Plower);
-    n  = geom.MeshWriter.averageNetworkNormal(meshTip);
-    fprintf(' Tip orientation (final) = %s; upper->i1 err = %.3e (%s), lower->iN err = %.3e (%s), normal = [%.3f %.3f %.3f]', ...
-        bestLabel, c1.bestError, c1.orientation, c2.bestError, c2.orientation, n);
-    if c1.bestError > tol || c2.bestError > tol
-        error('orientTipMeshWithNormalLocal: could not align tip to final wing edges.');
-    end
-    if ~strcmpi(c1.orientation, 'reversed') || ~strcmpi(c2.orientation, 'reversed')
-        error('orientTipMeshWithNormalLocal: final tip orientation is not reversed on both regular joins.');
-    end
-    if normalPenaltyLocal(n, expectedNormal) > 0
-        error('orientTipMeshWithNormalLocal: could not satisfy expected tip normal direction.');
-    end
-end
-
-function p = normalPenaltyLocal(n, expectedNormal)
-    p = 0;
-    switch lower(strtrim(expectedNormal))
-        case 'up'
-            if n(3) <= 0, p = 1; end
-        case 'down'
-            if n(3) >= 0, p = 1; end
-        case 'outboard'
-            if n(2) <= 0, p = 1; end
-        otherwise
-            error('normalPenaltyLocal: unknown expected normal "%s".', expectedNormal);
-    end
 end

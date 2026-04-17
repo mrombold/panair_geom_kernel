@@ -1,39 +1,39 @@
  ++ Running A502, F.T. Johnson, M.A. Epton et al
  PDAS version j01, 08 Dec 2020                
   real length, integer length, ratio:    8   4   2
- initialz   cpu time:     0.078
- input      cpu time:     0.109
- init       cpu time:     0.109
+ initialz   cpu time:     0.016
+ input      cpu time:     0.031
+ init       cpu time:     0.031
  ixtrns called with lth.le.0, irec:    63     0
  ixtrns called with lth.le.0, irec:    64     0
- geometry   cpu time:     0.188
- singular   cpu time:     0.312
- cntrl pt   cpu time:     0.328
- bndy cnd   cpu time:     0.344
- ffgen      cpu time:     0.391
- TIMING SUMMARY: vin,krn,phi,vel,vsp,near-    0.687500    0.640625    2.031250    0.000000    0.000000    1.156250
- TIMING SUMMARY: setup,pic-s,block,assy-    0.125000    5.062500    0.140625    0.281250
+ geometry   cpu time:     0.078
+ singular   cpu time:     0.141
+ cntrl pt   cpu time:     0.141
+ bndy cnd   cpu time:     0.156
+ ffgen      cpu time:     0.188
+ TIMING SUMMARY: vin,krn,phi,vel,vsp,near-    0.171875    0.203125    0.515625    0.000000    0.000000    0.484375
+ TIMING SUMMARY: setup,pic-s,block,assy-    0.062500    1.593750    0.062500    0.109375
  closms on unit 68   header record:   24001      95       1      94
- closms on unit  4   header record:   24002   29575   29481      94
-  ft04 (pic file) done.  index lth-24001  cp count- 2112  nwv recd- 2113 
- pic cost   cpu time:     6.016
- closms on unit 20   header record:      38    1963    1962       1
- closms on unit 19   header record:      83   15803   15802       1
- closms on unit  4   header record:   24002   29575   29481      94
- aic cost   cpu time:     6.359
- closms on unit 19   header record:      83   15804   15802       1
-  ft19 (l*u) done.  nhdat:      0 250000   2007      2    249     74     
+ closms on unit  4   header record:   24002    8138    8044      94
+  ft04 (pic file) done.  index lth-24001  cp count- 1112  nwv recd- 1113 
+ pic cost   cpu time:     2.016
+ closms on unit 20   header record:      12    1029    1028       1
+ closms on unit 19   header record:      27    4305    4304       1
+ closms on unit  4   header record:   24002    8138    8044      94
+ aic cost   cpu time:     2.141
+ closms on unit 19   header record:      27    4306    4304       1
+  ft19 (l*u) done.  nhdat:      0 250000   1047      2    249    143     
  1-st factor done
- closms on unit 19   header record:      83   15804   15802       1
- closms on unit 28   header record:      10      19      18       1
+ closms on unit 19   header record:      27    4306    4304       1
+ closms on unit 28   header record:       6      11      10       1
  1-st solve done
   direct solution, no iteration performed                                
   ft09 (singularity file) complete                                       
- mtrxsoln   cpu time:    14.156
- pppdq      cpu time:    14.250
- closms on unit 49   header record:     751     326     323       3
- closms on unit  4   header record:   24002   29575   29481      94
- output     cpu time:    14.938
- closms on unit 24   header record:     202     245     244       1
- closms on unit 26   header record:     302      43      41       2
- closms on unit  2   header record:   18001    3632    3561      71
+ mtrxsoln   cpu time:     3.359
+ pppdq      cpu time:     3.406
+ closms on unit 49   header record:     751     174     171       3
+ closms on unit  4   header record:   24002    8138    8044      94
+ output     cpu time:     3.734
+ closms on unit 24   header record:     202     149     148       1
+ closms on unit 26   header record:     302      26      24       2
+ closms on unit  2   header record:   18001    1872    1801      71
