@@ -14,15 +14,6 @@ fprintf('geom package found at: %s\n', script_dir);
 % -------------------------------------------------------------------------
 % User-editable Liming conic construction points
 % -------------------------------------------------------------------------
-P0 = [0.0, 0.0, 1.0];
-P1 = [1.2, 0.0, 0.0];
-T  = [0.0, 0.0, 0.0];
-S  = [0.42, 0.0, 0.38];
-
-fprintf('\n--- Build single Liming conic ---\n');
-
-[C, meta] = geom.Loft.limingConic(P0, P1, T, S);
-
 [Upr,~]=geom.Loft.limingConic([0 0 40], [100 0 55],[25 0 55], [25 0 50])
 [MaxBSide,~]=geom.Loft.limingConic([0 0 35], [100 0 40],[25 0 40], [25 0 36.5])
 [MaxBTop,~]=geom.Loft.limingConic([0 5 0], [100 10 0],[25 10 0], [25 8 0])
@@ -114,6 +105,12 @@ staS=[temp4(1) temp5(2) temp4(3)]
 [frame100,~]=geom.Loft.limingConic(staP0,staP1,staT,staS)
 
 
+S=geom.NURBSSurface.loft({frame0 frame20 frame40 frame60 frame80 frame100},3)
+Sgordon=geom.NURBSSurface.gordon({frame0 frame20 frame40 frame60 frame80 frame100},{})
+
+
+
+
 [Lwr,~]=geom.Loft.limingConic([0 0 30], [100 0 8],[25 0 8], [25 0 15])
 
 % -------------------------------------------------------------------------
@@ -123,16 +120,17 @@ staS=[temp4(1) temp5(2) temp4(3)]
 figure('Name','Fuselage curves')
 frame0.plot()
 hold on
-%Upr.plot()
-%Lwr.plot()
-%MaxBSide.plot()
-%MaxBTop.plot()
-%UprShldrSide.plot()
-%UprShldrTop.plot()
+Upr.plot()
+Lwr.plot()
+MaxBSide.plot()
+MaxBTop.plot()
+UprShldrSide.plot()
+UprShldrTop.plot()
 frame20.plot()
 frame40.plot()
 frame60.plot()
 frame80.plot()
 frame100.plot()
+S.plot()
 
 fprintf('\nDone.\n');
