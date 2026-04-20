@@ -695,6 +695,99 @@ classdef Loft
             end
         end
 
+        %% -----------------------------------------------------------------
+        % Surface-side wrappers (construction layer only)
+        % ------------------------------------------------------------------
+        function out = extractStationSection(S, stationValue, varargin)
+            % Wrapper for surface/plane section extraction using existing
+            % surface capabilities. This returns sampled station curves rather
+            % than re-implementing core surface math.
+            pa = inputParser;
+            addParameter(pa, 'Axis', 'x');
+            addParameter(pa, 'PlaneNormal', []);
+            addParameter(pa, 'NU', 120);
+            addParameter(pa, 'NV', 120);
+            addParameter(pa, 'Tolerance', 1e-8);
+            parse(pa, varargin{:});
+            opt = pa.Results;
+
+            nrm = geom.Loft.axisToNormal(opt.Axis);
+            if ~isempty(opt.PlaneNormal)
+                nrm = geom.Loft.ensure3DRow(opt.PlaneNormal);
+                nrm = nrm / norm(nrm);
+            end
+
+            udom = S.domainU;
+            vdom = S.domainV;
+            uu = linspace(udom(1), udom(2), max(3, opt.NU));
+            vv = linspace(vdom(1), vdom(2), max(3, opt.NV));
+
+            Pgrid = zeros(numel(uu), numel(vv), 3);
+            F = zeros(numel(uu), numel(vv));
+            for i = 1:numel(uu)
+                for j = 1:numel(vv)
+                    p = S.evaluate(uu(i), vv(j));
+                    Pgrid(i,j,:) = p;
+                    F(i,j) = dot(p, nrm) - stationValue;
+                end
+            end
+
+            segments = {};
+            q = 0;
+            for i = 1:(numel(uu)-1)
+                for j = 1:(numel(vv)-1)
+                    corners = [F(i,j), F(i+1,j), F(i+1,j+1), F(i,j+1)];
+                    if max(corners) < -opt.Tolerance || min(corners) > opt.Tolerance
+                        continue;
+                    end
+                    uvQuad = [uu(i), vv(j);
+                              uu(i+1), vv(j);
+                              uu(i+1), vv(j+1);
+                              uu(i), vv(j+1)];
+                    pQuad = [squeeze(Pgrid(i,j,:)).';
+                             squeeze(Pgrid(i+1,j,:)).';
+                             squeeze(Pgrid(i+1,j+1,:)).';
+                             squeeze(Pgrid(i,j+1,:)).'];
+                    edges = [1 2; 2 3; 3 4; 4 1];
+                    pts = zeros(0,3);
+                    uvs = zeros(0,2);
+                    for e = 1:4
+                        a = edges(e,1); b = edges(e,2);
+                        fa = corners(a); fb = corners(b);
+                        if abs(fa) <= opt.Tolerance && abs(fb) <= opt.Tolerance
+                            continue;
+                        elseif abs(fa) <= opt.Tolerance
+                            uvs(end+1,:) = uvQuad(a,:); %#ok<AGROW>
+                            pts(end+1,:) = pQuad(a,:); %#ok<AGROW>
+                        elseif abs(fb) <= opt.Tolerance
+                            uvs(end+1,:) = uvQuad(b,:); %#ok<AGROW>
+                            pts(end+1,:) = pQuad(b,:); %#ok<AGROW>
+                        elseif fa * fb < 0
+                            t = fa / (fa - fb);
+                            uv = uvQuad(a,:) + t * (uvQuad(b,:) - uvQuad(a,:));
+                            p  = pQuad(a,:)  + t * (pQuad(b,:)  - pQuad(a,:));
+                            uvs(end+1,:) = uv; %#ok<AGROW>
+                            pts(end+1,:) = p; %#ok<AGROW>
+                        end
+                    end
+                    if size(pts,1) >= 2
+                        q = q + 1;
+                        segments{q} = struct('points', pts, 'uv', uvs); %#ok<AGROW>
+                    end
+                end
+            end
+
+            out = struct();
+            out.stationValue = stationValue;
+            out.normal = nrm;
+            out.segments = segments;
+            out.note = 'Piecewise linear station-cut approximation from sampled surface.';
+        end
+
+        function S = loftSections(sectionCurves, loftDegree, varargin)
+            if nargin < 2 || isempty(loftDegree), loftDegree = 1; end
+            S = geom.NURBSSurface.loft(sectionCurves, loftDegree, varargin{:});
+        end
 
         %% -----------------------------------------------------------------
         % Helpers
