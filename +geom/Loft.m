@@ -1535,5 +1535,247 @@ classdef Loft
                 end
             end
         end
+        function [C3, data] = combinePlanarGuidesTo3D(Cxy, Cxz, varargin)
+        %COMBINEPLANARGUIDESTO3D Build a 3D NURBS curve from XY- and XZ-plane guides.
+        %
+        %   [C3, data] = combinePlanarGuidesTo3D(Cxy, Cxz)
+        %   [C3, data] = combinePlanarGuidesTo3D(Cxy, Cxz, 'Name', value, ...)
+        %
+        % Constructs a 3D guide curve whose XY projection follows Cxy and whose
+        % XZ projection follows Cxz. The default construction uses X as the shared
+        % station coordinate:
+        %
+        %   Pk = [ xk, y_from_Cxy(xk), z_from_Cxz(xk) ]
+        %
+        % and then globally interpolates a NURBS curve through the assembled 3D
+        % points using geom.NURBSCurve.globalInterp.
+        %
+        % Inputs
+        % ------
+        % Cxy : geom.NURBSCurve
+        %     Guide curve expected to lie in the XY plane (z approximately constant).
+        % Cxz : geom.NURBSCurve
+        %     Guide curve expected to lie in the XZ plane (y approximately constant).
+        %
+        % Name/value options
+        % ------------------
+        % 'Axis'            : Shared station axis. Default 'x'.
+        % 'Master'          : 'xy', 'xz', or 'stations'.
+        %                     - 'xy'      : sample stations from Cxy parameters
+        %                     - 'xz'      : sample stations from Cxz parameters
+        %                     - 'stations': use explicit station locations
+        %                     Default 'xy'.
+        % 'NumSamples'      : Number of samples when Master is 'xy' or 'xz'. Default 81.
+        % 'Stations'        : Explicit station vector when Master is 'stations'.
+        % 'Degree'          : Interpolation degree. Default 3.
+        % 'ParameterMethod' : globalInterp parameterization method. Default 'centripetal'.
+        % 'OccurrenceXY'    : Plane-intersection occurrence on Cxy. Default 1.
+        % 'OccurrenceXZ'    : Plane-intersection occurrence on Cxz. Default 1.
+        % 'BracketN'        : Bracketing samples for station intersection. Default 400.
+        % 'Tol'             : Station solve tolerance. Default 1e-12.
+        % 'MaxIter'         : Max solve iterations. Default 60.
+        % 'PlanarityTol'    : Warning tolerance for off-plane deviation. Default 1e-6.
+        % 'RestrictToOverlap' : If true and Master~='stations', clamp sampled stations to
+        %                       the overlapping station range of the two curves. Default true.
+        %
+        % Outputs
+        % -------
+        % C3   : geom.NURBSCurve
+        %     Interpolated 3D NURBS curve.
+        % data : struct with sampled stations, points, and intersection diagnostics.
+        %
+        % Intended use
+        % ------------
+        % Add this as a static helper inside +geom/Loft.m, then call as:
+        %
+        %   [C3, data] = geom.Loft.combinePlanarGuidesTo3D(Cxy, Cxz, ...)
+        %
+        % If kept as a standalone function, call directly by filename.
+        
+        pa = inputParser;
+        addParameter(pa, 'Axis', 'x');
+        addParameter(pa, 'Master', 'xy');
+        addParameter(pa, 'NumSamples', 81);
+        addParameter(pa, 'Stations', []);
+        addParameter(pa, 'Degree', 3);
+        addParameter(pa, 'ParameterMethod', 'centripetal');
+        addParameter(pa, 'OccurrenceXY', 1);
+        addParameter(pa, 'OccurrenceXZ', 1);
+        addParameter(pa, 'BracketN', 400);
+        addParameter(pa, 'Tol', 1e-12);
+        addParameter(pa, 'MaxIter', 60);
+        addParameter(pa, 'PlanarityTol', 1e-6);
+        addParameter(pa, 'RestrictToOverlap', true);
+        parse(pa, varargin{:});
+        opt = pa.Results;
+        
+        master = lower(string(opt.Master));
+        axisName = char(lower(string(opt.Axis)));
+        if ~ismember(axisName, {'x','y','z'})
+            error('combinePlanarGuidesTo3D:Axis', 'Axis must be ''x'', ''y'', or ''z''.');
+        end
+        
+        % Lightweight planarity sanity checks.
+        checkPlanarity(Cxy, 'xy', axisName, opt.PlanarityTol);
+        checkPlanarity(Cxz, 'xz', axisName, opt.PlanarityTol);
+        
+        % Determine station samples.
+        switch master
+            case "xy"
+                usMaster = linspace(Cxy.domain(1), Cxy.domain(2), max(2, round(opt.NumSamples)));
+                Pm = Cxy.evaluate(usMaster);
+                stations = Pm(:, axisIndex(axisName));
+            case "xz"
+                usMaster = linspace(Cxz.domain(1), Cxz.domain(2), max(2, round(opt.NumSamples)));
+                Pm = Cxz.evaluate(usMaster);
+                stations = Pm(:, axisIndex(axisName));
+            case "stations"
+                if isempty(opt.Stations)
+                    error('combinePlanarGuidesTo3D:Stations', ...
+                        'Stations must be supplied when Master is ''stations''.');
+                end
+                stations = opt.Stations(:);
+            otherwise
+                error('combinePlanarGuidesTo3D:Master', ...
+                    'Master must be ''xy'', ''xz'', or ''stations''.');
+        end
+        
+        if opt.RestrictToOverlap && master ~= "stations"
+            overlap = estimateOverlapRange(Cxy, Cxz, axisName);
+            keep = stations >= overlap(1) & stations <= overlap(2);
+            stations = stations(keep);
+            if numel(stations) < 2
+                error('combinePlanarGuidesTo3D:Overlap', ...
+                    'Too few sample stations remain in the overlapping %s-range.', upper(axisName));
+            end
+        end
+        
+        nS = numel(stations);
+        P3 = zeros(nS, 3);
+        uxy = zeros(nS, 1);
+        uxz = zeros(nS, 1);
+        infoXY = cell(nS,1);
+        infoXZ = cell(nS,1);
+        
+        for k = 1:nS
+            sk = stations(k);
+        
+            [uxy(k), pxy, infoXY{k}] = geom.Loft.sampleCurveAtStation( ...
+                Cxy, sk, 'Axis', axisName, 'Occurrence', opt.OccurrenceXY, ...
+                'BracketN', opt.BracketN, 'Tol', opt.Tol, 'MaxIter', opt.MaxIter);
+        
+            [uxz(k), pxz, infoXZ{k}] = geom.Loft.sampleCurveAtStation( ...
+                Cxz, sk, 'Axis', axisName, 'Occurrence', opt.OccurrenceXZ, ...
+                'BracketN', opt.BracketN, 'Tol', opt.Tol, 'MaxIter', opt.MaxIter);
+        
+            P3(k,:) = mergeProjectedPoint(pxy, pxz, axisName, sk);
+        end
+        
+        % Remove exact/near duplicates that can arise from repeated stations.
+        [P3u, ia] = uniquetol(P3, max(1e-12, 10*opt.Tol), 'ByRows', true, 'DataScale', 1);
+        [ia, order] = sort(ia);
+        P3u = P3u(order,:);
+        stations = stations(ia);
+        uxy = uxy(ia);
+        uxz = uxz(ia);
+        infoXY = infoXY(ia);
+        infoXZ = infoXZ(ia);
+        
+        if size(P3u,1) < 2
+            error('combinePlanarGuidesTo3D:Degenerate', ...
+                'Need at least two distinct 3D points to build a curve.');
+        end
+        
+        p = min(max(1, round(opt.Degree)), size(P3u,1) - 1);
+        C3 = geom.NURBSCurve.globalInterp(P3u, p, opt.ParameterMethod);
+        
+        data = struct();
+        data.points = P3u;
+        data.stations = stations;
+        data.degreeUsed = p;
+        data.parameterMethod = opt.ParameterMethod;
+        data.master = char(master);
+        data.axis = axisName;
+        data.uXY = uxy;
+        data.uXZ = uxz;
+        data.infoXY = infoXY;
+        data.infoXZ = infoXZ;
+        data.boundingBox = [min(P3u,[],1); max(P3u,[],1)];
+        end
+        
+        function idx = axisIndex(axisName)
+        switch lower(axisName)
+            case 'x'
+                idx = 1;
+            case 'y'
+                idx = 2;
+            case 'z'
+                idx = 3;
+            otherwise
+                error('combinePlanarGuidesTo3D:Axis', 'Unknown axis "%s".', axisName);
+        end
+        end
+        
+        function checkPlanarity(C, planeTag, stationAxis, tol)
+        % Warn only; do not hard-fail. The helper still works for approximately
+        % planar guides.
+        pts = C.evaluate(linspace(C.domain(1), C.domain(2), 101));
+        planeTag = lower(string(planeTag));
+        stationAxis = lower(string(stationAxis));
+        
+        switch planeTag
+            case "xy"
+                off = max(abs(pts(:,3) - mean(pts(:,3))));
+                if off > tol
+                    warning('combinePlanarGuidesTo3D:PlanarityXY', ...
+                        'Cxy is not perfectly planar in XY: max |z-zmean| = %.3e.', off);
+                end
+                if stationAxis == "z"
+                    warning('combinePlanarGuidesTo3D:AxisChoice', ...
+                        'Using Axis=''z'' with an XY guide is usually not meaningful.');
+                end
+            case "xz"
+                off = max(abs(pts(:,2) - mean(pts(:,2))));
+                if off > tol
+                    warning('combinePlanarGuidesTo3D:PlanarityXZ', ...
+                        'Cxz is not perfectly planar in XZ: max |y-ymean| = %.3e.', off);
+                end
+                if stationAxis == "y"
+                    warning('combinePlanarGuidesTo3D:AxisChoice', ...
+                        'Using Axis=''y'' with an XZ guide is usually not meaningful.');
+                end
+            otherwise
+                error('combinePlanarGuidesTo3D:PlaneTag', 'Unknown plane tag "%s".', planeTag);
+        end
+        end
+        
+        function range = estimateOverlapRange(C1, C2, axisName)
+        pts1 = C1.evaluate(linspace(C1.domain(1), C1.domain(2), 201));
+        pts2 = C2.evaluate(linspace(C2.domain(1), C2.domain(2), 201));
+        idx = axisIndex(axisName);
+        r1 = [min(pts1(:,idx)), max(pts1(:,idx))];
+        r2 = [min(pts2(:,idx)), max(pts2(:,idx))];
+        range = [max(r1(1), r2(1)), min(r1(2), r2(2))];
+        if range(2) < range(1)
+            error('combinePlanarGuidesTo3D:NoOverlap', ...
+                'The two guide curves do not overlap in %s.', upper(axisName));
+        end
+        end
+        
+        function P = mergeProjectedPoint(pxy, pxz, axisName, stationValue)
+        % Build a single 3D point whose projections match the two guides.
+        switch lower(axisName)
+            case 'x'
+                P = [stationValue, pxy(2), pxz(3)];
+            case 'y'
+                % Less common, but keeps the function generic.
+                P = [pxy(1), stationValue, pxz(3)];
+            case 'z'
+                P = [pxy(1), pxz(2), stationValue];
+            otherwise
+                error('combinePlanarGuidesTo3D:Axis', 'Unknown axis "%s".', axisName);
+        end
+        end
+
     end
 end
