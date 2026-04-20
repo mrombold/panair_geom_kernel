@@ -29,12 +29,12 @@ fprintf('\n--- Build single Liming conic ---\n');
 [UprShldrSide,~]=geom.Loft.limingConic([0 0 38], [100 0 52],[25 0 52], [25 0 47])
 [UprShldrTop,~]=geom.Loft.limingConic([0 4 0], [100 8 0],[25 8 0], [25 7 0])
 
-sta0=0
-[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta0)
-[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta0)
-[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta0)
-[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta0)
-[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta0)
+sta=0
+[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta)
+[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta)
+[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta)
+[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta)
+[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta)
 
 staP0=[temp1]
 staP1=[temp2(1) temp3(2) temp2(3)]
@@ -43,12 +43,12 @@ staS=[temp4(1) temp5(2) temp4(3)]
 
 [frame0,~]=geom.Loft.limingConic(staP0,staP1,staT,staS)
 
-sta20=20
-[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta0)
-[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta0)
-[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta0)
-[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta0)
-[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta0)
+sta=20
+[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta)
+[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta)
+[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta)
+[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta)
+[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta)
 
 staP0=[temp1]
 staP1=[temp2(1) temp3(2) temp2(3)]
@@ -57,12 +57,12 @@ staS=[temp4(1) temp5(2) temp4(3)]
 
 [frame20,~]=geom.Loft.limingConic(staP0,staP1,staT,staS)
 
-sta40=40
-[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta0)
-[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta0)
-[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta0)
-[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta0)
-[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta0)
+sta=40
+[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta)
+[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta)
+[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta)
+[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta)
+[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta)
 
 staP0=[temp1]
 staP1=[temp2(1) temp3(2) temp2(3)]
@@ -71,12 +71,12 @@ staS=[temp4(1) temp5(2) temp4(3)]
 
 [frame40,~]=geom.Loft.limingConic(staP0,staP1,staT,staS)
 
-sta60=60
-[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta0)
-[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta0)
-[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta0)
-[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta0)
-[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta0)
+sta=60
+[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta)
+[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta)
+[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta)
+[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta)
+[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta)
 
 staP0=[temp1]
 staP1=[temp2(1) temp3(2) temp2(3)]
@@ -85,12 +85,12 @@ staS=[temp4(1) temp5(2) temp4(3)]
 
 [frame60,~]=geom.Loft.limingConic(staP0,staP1,staT,staS)
 
-sta80=80
-[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta0)
-[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta0)
-[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta0)
-[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta0)
-[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta0)
+sta=80
+[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta)
+[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta)
+[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta)
+[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta)
+[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta)
 
 staP0=[temp1]
 staP1=[temp2(1) temp3(2) temp2(3)]
@@ -99,12 +99,12 @@ staS=[temp4(1) temp5(2) temp4(3)]
 
 [frame80,~]=geom.Loft.limingConic(staP0,staP1,staT,staS)
 
-sta100=100
-[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta0)
-[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta0)
-[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta0)
-[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta0)
-[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta0)
+sta=100
+[~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta)
+[~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta)
+[~,temp3]=geom.Loft.sampleCurveAtStation(MaxBTop,sta)
+[~,temp4]=geom.Loft.sampleCurveAtStation(UprShldrSide,sta)
+[~,temp5]=geom.Loft.sampleCurveAtStation(UprShldrTop,sta)
 
 staP0=[temp1]
 staP1=[temp2(1) temp3(2) temp2(3)]
