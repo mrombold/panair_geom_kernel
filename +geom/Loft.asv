@@ -1670,7 +1670,7 @@ classdef Loft
                     Cxz, sk, 'Axis', axisName, 'Occurrence', opt.OccurrenceXZ, ...
                     'BracketN', opt.BracketN, 'Tol', opt.Tol, 'MaxIter', opt.MaxIter);
             
-                P3(k,:) = geom.Loft.mergeProjectedPoint(pxy, pxz, axisName, sk);
+                P3(k,:) = mergeProjectedPoint(pxy, pxz, axisName, sk);
             end
             
             % Remove exact/near duplicates that can arise from repeated stations.
@@ -1754,7 +1754,7 @@ classdef Loft
         function range = estimateOverlapRange(C1, C2, axisName)
             pts1 = C1.evaluate(linspace(C1.domain(1), C1.domain(2), 201));
             pts2 = C2.evaluate(linspace(C2.domain(1), C2.domain(2), 201));
-            idx = geom.Loft.axisIndex(axisName);
+            idx = geom.LoftaxisIndex(axisName);
             r1 = [min(pts1(:,idx)), max(pts1(:,idx))];
             r2 = [min(pts2(:,idx)), max(pts2(:,idx))];
             range = [max(r1(1), r2(1)), min(r1(2), r2(2))];

@@ -20,6 +20,8 @@ fprintf('geom package found at: %s\n', script_dir);
 [UprShldrSide,~]=geom.Loft.limingConic([0 0 38], [100 0 52],[25 0 52], [25 0 47])
 [UprShldrTop,~]=geom.Loft.limingConic([0 4 0], [100 8 0],[25 8 0], [25 7 0])
 
+[MaxB,~]=geom.Loft.combinePlanarGuidesTo3D(MaxBTop,MaxBSide)
+[UprShldr,~]=geom.Loft.combinePlanarGuidesTo3D(UprShldrTop,UprShldrSide)
 sta=0
 [~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta)
 [~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta)
@@ -105,8 +107,8 @@ staS=[temp4(1) temp5(2) temp4(3)]
 [frame100,~]=geom.Loft.limingConic(staP0,staP1,staT,staS)
 
 
-S=geom.NURBSSurface.loft({frame0 frame20 frame40 frame60 frame80 frame100},3)
-Sgordon=geom.NURBSSurface.gordon({frame0 frame20 frame40 frame60 frame80 frame100},{})
+S=geom.NURBSSurface.loft({frame0 frame20 frame40 frame60 frame80 frame100},1)
+Sgordon=geom.NURBSSurface.gordon({frame0 frame20 frame40 frame60 frame80 frame100},{Upr, UprShldr, MaxB},2,3)
 
 
 
@@ -122,15 +124,16 @@ frame0.plot()
 hold on
 Upr.plot()
 Lwr.plot()
-MaxBSide.plot()
-MaxBTop.plot()
-UprShldrSide.plot()
-UprShldrTop.plot()
+MaxB.plot()
+UprShldr.plot()
 frame20.plot()
 frame40.plot()
 frame60.plot()
 frame80.plot()
 frame100.plot()
 S.plot()
+%Sgordon.plot()
+ax = gca;
+ax.Clipping = 'off';
 
 fprintf('\nDone.\n');
