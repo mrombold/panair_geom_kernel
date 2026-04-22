@@ -291,6 +291,13 @@ classdef Loft
             uv = [d * frame.xhat(:), d * frame.yhat(:)];
         end
 
+        function P = fromPlane2D(uv, frame)
+            if size(uv,2) ~= 2
+                error('Loft:fromPlane2D', 'uv must be Nx2.');
+            end
+            P = frame.origin + uv(:,1) * frame.xhat + uv(:,2) * frame.yhat;
+        end
+
         %% -----------------------------------------------------------------
         % Liming conic construction
         % ------------------------------------------------------------------

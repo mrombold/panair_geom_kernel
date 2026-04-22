@@ -1,4 +1,4 @@
-%% demo_conicsurface_spine_normal.m
+%% demo_conicsurface_spine_normal_fixed.m
 clear; close all; clc;
 
 script_dir = fileparts(mfilename('fullpath'));
@@ -10,40 +10,51 @@ if ~exist('+geom', 'dir') && isempty(which('geom.NURBSCurve'))
            'Run this from the repo root or add the geometry kernel to path.']);
 end
 fprintf('geom package found at: %s\n', script_dir);
-fprintf('\n=== ConicSurface spine-normal demo ===\n');
+fprintf('\n=== ConicSurface spine-normal demo (fixed) ===\n');
 
+% -------------------------------------------------------------------------
+% Spine
+% -------------------------------------------------------------------------
 Psp = [ ...
      0.0   0.0   0.0;
-    20.0   5.0   2.0;
-    45.0  12.0   6.0;
-    75.0  18.0  11.0;
-   100.0  25.0  15.0];
+    20.0   4.0   2.0;
+    45.0  10.0   6.0;
+    75.0  16.0  11.0;
+   100.0  22.0  15.0];
 Spine = geom.NURBSCurve.globalInterp(Psp, 3, 'centripetal');
 
-Pup = [ ...
-     0.0   0.0  18.0;
-    20.0   5.0  19.0;
-    45.0  12.0  21.0;
-    75.0  18.0  24.0;
-   100.0  25.0  26.0];
-Plo = [ ...
-     0.0   8.0   7.0;
-    20.0  12.0   7.5;
-    45.0  19.0   8.5;
-    75.0  25.0   9.5;
-   100.0  31.0  10.5];
-Ptan = [ ...
-     0.0   8.0  18.0;
-    20.0  12.0  19.0;
-    45.0  19.0  20.5;
-    75.0  25.0  22.0;
-   100.0  31.0  23.0];
-Psh = [ ...
-     0.0   6.0  15.0;
-    20.0   9.5  16.0;
-    45.0  15.5  17.8;
-    75.0  21.0  19.8;
-   100.0  26.5  21.0];
+% -------------------------------------------------------------------------
+% Build 4 guide curves so they are guaranteed to intersect every spine-normal
+% station plane.  We do this by constructing them directly from points lying
+% in the local plane at the same spine parameter.
+% -------------------------------------------------------------------------
+sNodes = linspace(Spine.domain(1), Spine.domain(2), 7).';
+
+Pup  = zeros(numel(sNodes), 3);
+Plo  = zeros(numel(sNodes), 3);
+Ptan = zeros(numel(sNodes), 3);
+Psh  = zeros(numel(sNodes), 3);
+
+for i = 1:numel(sNodes)
+    s = sNodes(i);
+
+    O = Spine.evaluate(s);
+    d1 = Spine.derivative(s, 1);
+    nhat = d1 / norm(d1);
+    frame = geom.Loft.makePlaneFrame(O, nhat, [0 0 1]);
+
+    % Local in-plane coordinates [xhat, yhat]
+    % Choose a simple family of section points that varies smoothly.
+    p0_2d = [0.0, 18.0 + 6.0*s];
+    p1_2d = [8.0 + 2.0*s, 7.0 + 2.0*s];
+    t_2d  = [8.0 + 2.0*s, 18.0 + 5.0*s];
+    s_2d  = [6.0 + 1.5*s, 15.0 + 4.5*s];
+
+    Pup(i,:)  = geom.Loft.fromPlane2D(p0_2d, frame);
+    Plo(i,:)  = geom.Loft.fromPlane2D(p1_2d, frame);
+    Ptan(i,:) = geom.Loft.fromPlane2D(t_2d,  frame);
+    Psh(i,:)  = geom.Loft.fromPlane2D(s_2d,  frame);
+end
 
 UpperGuide    = geom.NURBSCurve.globalInterp(Pup, 3, 'centripetal');
 LowerGuide    = geom.NURBSCurve.globalInterp(Plo, 3, 'centripetal');
@@ -62,7 +73,7 @@ S = geom.ConicSurface.fromSpineNormal( ...
 
 M = S.isoMesh(41, 31);
 
-figure('Name','ConicSurface spine-normal','Color','w'); hold on;
+figure('Name','ConicSurface spine-normal fixed','Color','w'); hold on;
 surf(M.X, M.Y, M.Z, ...
     'FaceAlpha', 0.8, ...
     'EdgeColor', [0.25 0.25 0.25], ...
