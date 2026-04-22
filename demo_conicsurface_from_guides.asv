@@ -78,7 +78,7 @@ S = geom.ConicSurface( ...
 % Probe a section mid-station
 
 % Mesh the patch
-M = S.isoMesh(11, 11);
+M = S.isoMesh(101, 41);
 
 % -------------------------------------------------------------------------
 % Plot
@@ -88,8 +88,8 @@ hold on;
 
 % Guides plotted by sampling, since geom.NURBSCurve.plot() in this repo does
 % not accept MATLAB line name/value pairs.
-UpperGuide.plot()
-LowerGuide.plot()
+UpperGuide.plot(5000)
+LowerGuide.plot(0)
 TangencyGuide.plot()
 ShoulderGuide.plot()
 
@@ -100,31 +100,20 @@ hSurf = surf(M.X, M.Y, M.Z, ...
     'FaceColor', [0.60 0.78 0.96]);
 
 % A few station sections
-stations = [0 20 40 60 80 100];
+stations = 40:.25:45;
 hSections = gobjects(numel(stations),1);
 for k = 1:numel(stations)
     Ck = S.sectionAtStation(stations(k));
-    tk = linspace(Ck.domain(1), Ck.domain(2), 80);
-    Pk = Ck.evaluate(tk);
-    hSections(k) = plot3(Pk(:,1), Pk(:,2), Pk(:,3), 'k-', 'LineWidth', 1.25);
+    Ck.plot()
 end
 
-% Mid-station section highlighted
-hMid = plot3(Pmid(:,1), Pmid(:,2), Pmid(:,3), 'r-', 'LineWidth', 2.0);
-
 axis equal;
-grid on;
+
 xlabel('X'); ylabel('Y'); zlabel('Z');
 title('Guide-driven ConicSurface (Upper / Lower / Tangency / Shoulder)');
-legend([hUpper, hLower, hTangency, hShoulder, hSurf, hSections(1), hMid], ...
-       {'Upper guide','Lower guide','Tangency guide','Shoulder guide', ...
-        'Surface', 'Station sections', 'Mid-station section'}, ...
-       'Location', 'bestoutside');
 ax = gca;
 ax.Clipping = 'off';
 view(3);
 
-fprintf(' mid-station section built successfully at x = %.3f\n', sMid);
-fprintf(' mesh size = %d x %d\n', M.nu, M.nv);
 fprintf('\nDone.\n');
 

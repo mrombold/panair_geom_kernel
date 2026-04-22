@@ -22,6 +22,7 @@ fprintf('\n=== ConicSurface from 4 Longitudinal Guides Demo ===\n');
 % Sweep is along +X, so each guide crosses every YZ station plane x = const.
 % -------------------------------------------------------------------------
 
+
 % % Upper and lower edge guides in the X-Z plane (y = 0)
 % [UpperGuide, upperMeta] = geom.Loft.limingConic( ...
 %     [0   0  40], ...
@@ -78,7 +79,7 @@ S = geom.ConicSurface( ...
 % Probe a section mid-station
 
 % Mesh the patch
-%M = S.isoMesh(101, 41);
+M = S.isoMesh(101, 41);
 
 % -------------------------------------------------------------------------
 % Plot
@@ -88,24 +89,24 @@ hold on;
 
 % Guides plotted by sampling, since geom.NURBSCurve.plot() in this repo does
 % not accept MATLAB line name/value pairs.
-UpperGuide.plot(5000)
-LowerGuide.plot(5000)
-TangencyGuide.plot(5000)
-ShoulderGuide.plot(5000)
+UpperGuide.plot()
+LowerGuide.plot()
+TangencyGuide.plot()
+ShoulderGuide.plot()
 
 % Surface mesh
-%hSurf = surf(M.X, M.Y, M.Z, ...
-%    'FaceAlpha', 0.75, ...
-%    'EdgeColor', [0.25 0.25 0.25], ...
-%    'FaceColor', [0.60 0.78 0.96]);
+hSurf = surf(M.X, M.Y, M.Z, ...
+    'FaceAlpha', 0.75, ...
+    'EdgeColor', [0.25 0.25 0.25], ...
+    'FaceColor', [0.60 0.78 0.96]);
 
 % A few station sections
-stations = 40:.25:45;
-hSections = gobjects(numel(stations),1);
-for k = 1:numel(stations)
-    Ck = S.sectionAtStation(stations(k));
-    Ck.plot()
-end
+% stations = 40:.25:45;
+% hSections = gobjects(numel(stations),1);
+% for k = 1:numel(stations)
+%     Ck = S.sectionAtStation(stations(k));
+%     Ck.plot()
+% end
 
 axis equal;
 
@@ -115,6 +116,5 @@ ax = gca;
 ax.Clipping = 'off';
 view(3);
 
-fprintf(' mesh size = %d x %d\n', M.nu, M.nv);
 fprintf('\nDone.\n');
 

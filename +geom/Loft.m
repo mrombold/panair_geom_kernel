@@ -310,7 +310,7 @@ classdef Loft
 
             pa = inputParser;
             addParameter(pa, 'ShoulderParameter', []);
-            addParameter(pa, 'Tolerance', 1e-8);
+            addParameter(pa, 'Tolerance', 1e-3);
             addParameter(pa, 'FitTolerance', []);
             parse(pa, varargin{:});
             opt = pa.Results;
@@ -350,15 +350,18 @@ classdef Loft
             scale = max([1, norm(P1-P0), norm(T-P0), norm(S-P0)]);
             fitTol = opt.FitTolerance;
             if isempty(fitTol)
-                fitTol = max(1e-5 * scale, 100 * opt.Tolerance);
+                fitTol = max(opt.Tolerance);
             end
+            
             if err > fitTol
-                relaxedFitTol = max([10 * fitTol, 1e-4 * scale, 1e-3 * scale]);
-                fitAcceptedWithRelaxation = (err <= relaxedFitTol);
-            else
-                relaxedFitTol = fitTol;
-                fitAcceptedWithRelaxation = false;
+                warning('Loft:limingConic', ...
+                    ['Geometry is not exactly representable by a single rational quadratic ' ...
+                     'to the requested tolerance. Error = %.16e, FitTolerance = %.16e.'], ...
+                    err, fitTol);
             end
+            
+            relaxedFitTol = fitTol;
+            fitAcceptedWithRelaxation = false;
 
             meta = struct();
             meta.parameter = us;
@@ -376,112 +379,151 @@ classdef Loft
             meta.frame = frame;
         end
 
+
+
+        
+        function [us, w, info] = solveLimingShoulderParameter(P0, P1, T, S, tol)
+            if nargin < 5 || isempty(tol)
+                tol = 1e-14;
+            end
+        
+            P0 = P0(:).';
+            P1 = P1(:).';
+            T  = T(:).';
+            S  = S(:).';
+        
+            if numel(P0) ~= 2 || numel(P1) ~= 2 || numel(T) ~= 2 || numel(S) ~= 2
+                error('Loft:solveLimingShoulderParameter', ...
+                    'P0, P1, T, and S must all be 2D row vectors.');
+            end
+        
+            % Use:
+            %   a = P0 - S
+            %   b = P1 - S
+            %   c = T  - S
+            a = P0 - S;
+            b = P1 - S;
+            c = T  - S;
+        
+            % Exact conic condition:
+            %   (1-u)^2 * det(a,c) + u^2 * det(b,c) = 0
+            A = a(1)*c(2) - a(2)*c(1);
+            B = b(1)*c(2) - b(2)*c(1);
+        
+            if abs(A) < tol || abs(B) < tol || A*B >= 0
+                error('Loft:solveLimingShoulderParameter', ...
+                    ['No exact interior conic solution exists for this geometry. ' ...
+                     'Need A*B < 0.']);
+            end
+        
+            rho = sqrt(-A / B);
+            us = rho / (1 + rho);
+        
+            if ~(isfinite(us) && us > 0 && us < 1)
+                error('Loft:solveLimingShoulderParameter', ...
+                    'Computed shoulder parameter is invalid: us = %.16g.', us);
+            end
+        
+            B0 = (1-us)^2;
+            B1 = 2*us*(1-us);
+            B2 = us^2;
+        
+            % From:
+            %   B1*w*c = -(B0*a + B2*b)
+            num = -dot(c, B0*a + B2*b);
+            den =  B1 * dot(c, c);
+        
+            if abs(den) < tol
+                error('Loft:solveLimingShoulderParameter', ...
+                    'Degenerate denominator while solving middle weight.');
+            end
+        
+            w = num / den;
+        
+            if ~(isfinite(w) && w > 0)
+                error('Loft:solveLimingShoulderParameter', ...
+                    'Computed middle weight is invalid: w = %.16g.', w);
+            end
+        
+            % Exact residual check in local 2D plane
+            Cpt = (B0*P0 + B1*w*T + B2*P1) / (B0 + B1*w + B2);
+            err = norm(Cpt - S);
+        
+            info = struct();
+            info.method = 'exact_conic_algebraic';
+            info.A = A;
+            info.B = B;
+            info.rho = rho;
+            info.pointError = err;
+        end
+        
         function [w, info] = solveLimingWeightAtParameter(P0, P1, T, S, u, tol)
             if nargin < 6 || isempty(tol)
-                tol = 1e-12;
+                tol = 1e-14;
             end
-
+        
+            P0 = P0(:).';
+            P1 = P1(:).';
+            T  = T(:).';
+            S  = S(:).';
+        
+            if numel(P0) ~= 2 || numel(P1) ~= 2 || numel(T) ~= 2 || numel(S) ~= 2
+                error('Loft:solveLimingWeightAtParameter', ...
+                    'P0, P1, T, and S must all be 2D row vectors.');
+            end
+            if ~(isscalar(u) && isfinite(u) && u > 0 && u < 1)
+                error('Loft:solveLimingWeightAtParameter', ...
+                    'u must be a finite scalar in (0,1).');
+            end
+        
+            a = P0 - S;
+            b = P1 - S;
+            c = T  - S;
+        
             B0 = (1-u)^2;
             B1 = 2*u*(1-u);
             B2 = u^2;
-
-            d0 = S - P0;
-            d1 = T - S;
-            d2 = S - P1;
-
-            cands = [];
-            for j = 1:2
-                num = B0 * d0(j) + B2 * d2(j);
-                den = B1 * d1(j);
-                if abs(den) > tol
-                    cands(end+1) = num / den; %#ok<AGROW>
-                end
-            end
-
-            if isempty(cands)
+        
+            % From:
+            %   B1*w*c = -(B0*a + B2*b)
+            rhs = -(B0*a + B2*b);
+            lhs =  B1*c;
+        
+            mask = abs(lhs) > tol;
+            if ~any(mask)
                 error('Loft:solveLimingWeightAtParameter', ...
                     'Could not determine middle weight from supplied geometry.');
             end
-
-            w = median(cands);
-            residuals = abs(cands - w);
-
+        
+            cands = rhs(mask) ./ lhs(mask);
+        
+            % Scalar least-squares estimate
+            w = dot(lhs(mask), rhs(mask)) / dot(lhs(mask), lhs(mask));
+        
             if ~(isfinite(w) && w > 0)
                 error('Loft:solveLimingWeightAtParameter', ...
                     'Computed middle weight is invalid: w = %.16g.', w);
             end
-
+        
+            residuals = abs(cands - w);
+        
             info = struct();
             info.candidates = cands;
             info.candidateSpread = max(residuals);
+            info.usedCoordinates = find(mask);
+            info.B0 = B0;
+            info.B1 = B1;
+            info.B2 = B2;
         end
 
-        function [us, w, info] = solveLimingShoulderParameter(P0, P1, T, S, tol)
-            if nargin < 5 || isempty(tol)
-                tol = 1e-10;
-            end
 
-            usGrid = linspace(1e-4, 1-1e-4, 3000);
-            best = inf;
-            us = NaN;
-            w = NaN;
-            bestSpread = inf;
-            candUs = [];
-            candW = [];
-            candSpread = [];
 
-            for k = 1:numel(usGrid)
-                u = usGrid(k);
-                try
-                    [wk, infok] = geom.Loft.solveLimingWeightAtParameter(P0, P1, T, S, u, tol);
-                catch
-                    continue;
-                end
-                if ~(isfinite(wk) && wk > 0)
-                    continue;
-                end
 
-                B0 = (1-u)^2;
-                B1 = 2*u*(1-u);
-                B2 = u^2;
-                num = B0*P0 + B1*wk*T + B2*P1;
-                den = B0 + B1*wk + B2;
-                C = num / den;
-                err = norm(C - S);
 
-                score = err + 0.01 * infok.candidateSpread;
-                if score < best
-                    best = score;
-                    us = u;
-                    w = wk;
-                    bestSpread = infok.candidateSpread;
-                end
 
-                if err < max(1e-6, 100*tol)
-                    candUs(end+1) = u; %#ok<AGROW>
-                    candW(end+1) = wk; %#ok<AGROW>
-                    candSpread(end+1) = infok.candidateSpread; %#ok<AGROW>
-                end
-            end
 
-            if isempty(candUs) && ~(isfinite(us) && isfinite(w))
-                error('Loft:solveLimingShoulderParameter', ...
-                    ['Could not find a valid shoulder parameter in (0,1) ' ...
-                     'with positive middle weight.']);
-            end
 
-            if ~isempty(candUs)
-                [~, idx] = min(candSpread);
-                us = candUs(idx);
-                w = candW(idx);
-                bestSpread = candSpread(idx);
-            end
 
-            info = struct();
-            info.bestScore = best;
-            info.bestSpread = bestSpread;
-            info.searchCount = numel(usGrid);
-        end
 
         %% -----------------------------------------------------------------
         % Combine planar guides into a 3D guide
