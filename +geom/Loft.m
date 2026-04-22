@@ -1,37 +1,39 @@
-
 classdef Loft
-    %LOFT Higher-level aircraft lofting / construction helpers built on top
-    % of geom.NURBSCurve and geom.NURBSSurface.
+    %LOFT Minimal guide/sampling helpers used by ConicSurface workflows.
     %
-    % This class is intended to hold design/construction techniques that are
-    % not core generic NURBS primitives. Methods return ordinary
-    % geom.NURBSCurve / geom.NURBSSurface objects and plain MATLAB structs.
+    % This trimmed version focuses on the geometry operations currently used
+    % by the guide-driven conic surface workflow:
     %
-    % Loft-layer capabilities in this version:
-    %   - sample / intersect 3D curves with station planes
-    %   - local construction plane utilities
-    %   - 2D line intersection
-    %   - Liming-style rational quadratic conic
-    %   - reverse conic / matched conic convenience builders
-    %   - tangent-controlled cubic Bezier/NURBS fallback branch
-    %   - section-branch construction from geometric primitives
-    %   - fuselage section construction from guide curves
-    %   - conic-chain profile construction + continuity checks
-    %   - simple fairness helpers (curvature comb data, monotonicity)
-    %   - station extraction wrappers for surfaces
+    %   - sample/intersect 3D curves with station planes
+    %   - build local construction planes
+    %   - project 3D geometry into a local 2D plane
+    %   - construct a Liming-style rational quadratic conic from 4 points
+    %   - combine XY and XZ planar guides into a sampled/interpolated 3D guide
     %
-    % Notes:
-    %   - Exact NURBS evaluation, fitting, splitting, etc. remain in
-    %     geom.NURBSCurve / geom.NURBSSurface.
-    %   - Composite/profile helpers return cell arrays of ordinary curve
-    %     segments rather than introducing a new heavyweight data model.
+    % Exact NURBS evaluation, interpolation, fitting, splitting, etc. remain in
+    % geom.NURBSCurve / geom.NURBSSurface.
 
     methods (Static)
 
         %% -----------------------------------------------------------------
-        % Reference/sampling tools
+        % Curve / station sampling
         % ------------------------------------------------------------------
         function [u, pt, info] = sampleCurveAtStation(C, stationValue, varargin)
+            %SAMPLECURVEATSTATION Intersect a curve with a station plane.
+            %
+            % [u, pt, info] = sampleCurveAtStation(C, stationValue, ...)
+            %
+            % By default, stationValue is interpreted along the X axis:
+            %   dot([x y z], [1 0 0]) = stationValue
+            %
+            % Optional name/value pairs:
+            %   'Axis'       : 'x', 'y', or 'z' (default 'x')
+            %   'Normal'     : explicit plane normal, overrides Axis
+            %   'BracketN'   : coarse samples used to bracket intersections
+            %   'Tol'        : solve tolerance
+            %   'MaxIter'    : max Newton/bisection iterations
+            %   'Occurrence' : which crossing to use if multiple exist
+
             pa = inputParser;
             addParameter(pa, 'Axis', 'x');
             addParameter(pa, 'Normal', []);
@@ -46,7 +48,8 @@ classdef Loft
             if ~isempty(opt.Normal)
                 nrm = opt.Normal(:).';
                 if norm(nrm) < eps
-                    error('Loft:sampleCurveAtStation', 'Normal vector must be nonzero.');
+                    error('Loft:sampleCurveAtStation', ...
+                        'Normal vector must be nonzero.');
                 end
                 nrm = nrm / norm(nrm);
             end
@@ -55,10 +58,11 @@ classdef Loft
             us = linspace(dom(1), dom(2), max(20, opt.BracketN));
             pts = C.evaluate(us);
             if size(pts, 2) ~= 3
-                error('Loft:sampleCurveAtStation', 'Curve evaluation must return Nx3 points.');
+                error('Loft:sampleCurveAtStation', ...
+                    'Curve evaluation must return Nx3 points.');
             end
-            f = pts * nrm(:) - stationValue;
 
+            f = pts * nrm(:) - stationValue;
             [fminAbs, idx0] = min(abs(f));
             if fminAbs < opt.Tol
                 u = us(idx0);
@@ -140,9 +144,11 @@ classdef Loft
                     u = b;
                     break;
                 elseif fa * fTrial <= 0
-                    b = uTrial; fb = fTrial;
+                    b = uTrial;
+                    fb = fTrial;
                 else
-                    a = uTrial; fa = fTrial;
+                    a = uTrial;
+                    fa = fTrial;
                 end
 
                 uNew = 0.5 * (a + b);
@@ -159,11 +165,6 @@ classdef Loft
                 'iterations', iters);
         end
 
-        function [u, pt, info] = intersectCurveWithPlane(C, planeNormal, planeOffset, varargin)
-            [u, pt, info] = geom.Loft.sampleCurveAtStation(C, planeOffset, ...
-                'Normal', planeNormal, varargin{:});
-        end
-
         function nrm = axisToNormal(axisName)
             if isstring(axisName), axisName = char(axisName); end
             switch lower(strtrim(axisName))
@@ -174,16 +175,36 @@ classdef Loft
                 case 'z'
                     nrm = [0 0 1];
                 otherwise
-                    error('Loft:axisToNormal', 'Unknown axis "%s".', axisName);
+                    error('Loft:axisToNormal', ...
+                        'Unknown axis "%s".', axisName);
             end
         end
 
+        function idx = axisIndex(axisName)
+            if isstring(axisName), axisName = char(axisName); end
+            switch lower(strtrim(axisName))
+                case 'x'
+                    idx = 1;
+                case 'y'
+                    idx = 2;
+                case 'z'
+                    idx = 3;
+                otherwise
+                    error('Loft:axisIndex', ...
+                        'Unknown axis "%s".', axisName);
+            end
+        end
+
+        %% -----------------------------------------------------------------
+        % Local plane utilities
+        % ------------------------------------------------------------------
         function frame = makePlaneFrame(origin, normal, xHint)
             origin = geom.Loft.ensure3DRow(origin);
             normal = geom.Loft.ensure3DRow(normal);
 
             if norm(normal) < 1e-14
-                error('Loft:makePlaneFrame', 'Plane normal must be nonzero.');
+                error('Loft:makePlaneFrame', ...
+                    'Plane normal must be nonzero.');
             end
 
             if nargin < 3 || isempty(xHint)
@@ -212,14 +233,13 @@ classdef Loft
             frame = struct();
             frame.origin = origin;
             frame.normal = nhat;
-            frame.xhat   = xhat;
-            frame.yhat   = yhat;
-            frame.R      = [xhat(:), yhat(:), nhat(:)];
+            frame.xhat = xhat;
+            frame.yhat = yhat;
+            frame.R = [xhat(:), yhat(:), nhat(:)];
         end
 
         function frame = makeLocalPlaneFrameFromPoints(varargin)
-            % Build a local construction plane from 3D points that are
-            % expected to be coplanar or nearly coplanar.
+            %MAKELOCALPLANEFRAMEFROMPOINTS Best-fit local plane through 3D points.
             tol = 1e-10;
             if nargin >= 1 && isnumeric(varargin{end}) && isscalar(varargin{end})
                 tol = varargin{end};
@@ -246,7 +266,6 @@ classdef Loft
                     'Could not determine a stable local plane normal.');
             end
 
-            % Flip for consistency with first nonzero cross product if possible.
             for i = 2:size(P,1)-1
                 v1 = P(i,:)   - P(1,:);
                 v2 = P(i+1,:) - P(1,:);
@@ -272,35 +291,23 @@ classdef Loft
             uv = [d * frame.xhat(:), d * frame.yhat(:)];
         end
 
-        function P = fromPlane2D(uv, frame)
-            if size(uv,2) ~= 2
-                error('Loft:fromPlane2D', 'uv must be Nx2.');
-            end
-            P = frame.origin + uv(:,1) * frame.xhat + uv(:,2) * frame.yhat;
-        end
-
-        function [pInt, t1, t2] = lineIntersection2D(P1, d1, P2, d2, tol)
-            if nargin < 5 || isempty(tol), tol = 1e-12; end
-            P1 = P1(:).';
-            P2 = P2(:).';
-            d1 = d1(:).';
-            d2 = d2(:).';
-            A = [d1(:), -d2(:)];
-            rhs = (P2 - P1).';
-            if abs(det(A)) < tol
-                error('Loft:lineIntersection2D', ...
-                    '2D lines are parallel or nearly parallel.');
-            end
-            t = A \ rhs;
-            t1 = t(1);
-            t2 = t(2);
-            pInt = P1 + t1 * d1;
-        end
-
         %% -----------------------------------------------------------------
-        % Liming / conic / cubic construction tools
+        % Liming conic construction
         % ------------------------------------------------------------------
         function [C, meta] = limingConic(P0, P1, T, S, varargin)
+            %LIMINGCONIC Build a single rational quadratic conic through 4 points.
+            %
+            % Inputs:
+            %   P0 : start point
+            %   P1 : end point
+            %   T  : tangent-line intersection point
+            %   S  : draw-through / shoulder point
+            %
+            % Optional name/value pairs:
+            %   'ShoulderParameter' : prescribed u in (0,1), or []/'auto'
+            %   'Tolerance'         : geometric solve tolerance
+            %   'FitTolerance'      : tolerance for shoulder-point fit warning
+
             pa = inputParser;
             addParameter(pa, 'ShoulderParameter', []);
             addParameter(pa, 'Tolerance', 1e-8);
@@ -327,7 +334,8 @@ classdef Loft
                 us = opt.ShoulderParameter;
                 if ~isscalar(us) || us <= 0 || us >= 1
                     error('Loft:limingConic', ...
-                        'ShoulderParameter must lie strictly between 0 and 1, or be empty/''auto''.');
+                        ['ShoulderParameter must lie strictly between 0 and 1, ' ...
+                         'or be empty/''auto''.']);
                 end
                 [w, solveInfo] = geom.Loft.solveLimingWeightAtParameter(p02, p12, t2, s2, us, opt.Tolerance);
             end
@@ -368,367 +376,11 @@ classdef Loft
             meta.frame = frame;
         end
 
-        function [C, meta] = reverseConic(P0, P1, T, S, varargin)
-            % Convenience wrapper for Liming-style conics where the user wants
-            % the segment reversed back after construction.
-            [Cfwd, meta0] = geom.Loft.limingConic(P1, P0, T, S, varargin{:});
-            C = Cfwd.reverse();
-            meta = meta0;
-            meta.reversed = true;
-        end
-
-        function out = matchConicPair(specA, specB, varargin)
-            % Build two conic segments and report geometric matching at the join.
-            %
-            % specA/specB fields:
-            %   P0, P1, T, S
-            pa = inputParser;
-            addParameter(pa, 'Tolerance', 1e-8);
-            parse(pa, varargin{:});
-            tol = pa.Results.Tolerance;
-
-            [CA, metaA] = geom.Loft.limingConic(specA.P0, specA.P1, specA.T, specA.S);
-            [CB, metaB] = geom.Loft.limingConic(specB.P0, specB.P1, specB.T, specB.S);
-
-            out = struct();
-            out.curveA = CA;
-            out.curveB = CB;
-            out.metaA  = metaA;
-            out.metaB  = metaB;
-            out.match  = geom.Loft.checkCurveJoin(CA, CB, 'Tolerance', tol);
-        end
-
-        function [C, meta] = tangentControlledCubic(P0, P1, T0, T1, varargin)
-            % Cubic Bezier/NURBS from endpoints and tangent vectors/directions.
-            pa = inputParser;
-            addParameter(pa, 'StartScale', []);
-            addParameter(pa, 'EndScale', []);
-            addParameter(pa, 'ShoulderPoint', []);
-            addParameter(pa, 'ShoulderParameter', 0.5);
-            parse(pa, varargin{:});
-            opt = pa.Results;
-
-            P0 = geom.Loft.ensure3DRow(P0);
-            P1 = geom.Loft.ensure3DRow(P1);
-            T0 = geom.Loft.ensure3DRow(T0);
-            T1 = geom.Loft.ensure3DRow(T1);
-
-            span = norm(P1 - P0);
-            if span < 1e-14
-                error('Loft:tangentControlledCubic', 'P0 and P1 must be distinct.');
-            end
-
-            if isempty(opt.StartScale), a = span/3; else, a = opt.StartScale; end
-            if isempty(opt.EndScale),   b = span/3; else, b = opt.EndScale; end
-
-            d0 = T0;
-            d1 = T1;
-            if norm(d0) < 1e-14 || norm(d1) < 1e-14
-                error('Loft:tangentControlledCubic', 'Tangent directions must be nonzero.');
-            end
-            d0 = d0 / norm(d0);
-            d1 = d1 / norm(d1);
-
-            if ~isempty(opt.ShoulderPoint)
-                S = geom.Loft.ensure3DRow(opt.ShoulderPoint);
-                us = opt.ShoulderParameter;
-                if ~(isscalar(us) && us > 0 && us < 1)
-                    error('Loft:tangentControlledCubic', ...
-                        'ShoulderParameter must lie in (0,1).');
-                end
-                A = geom.Loft.cubicBezierEndpointScaleSystem(P0, P1, d0, d1, S, us);
-                ab = A \ (S(:) - geom.Loft.cubicBezierFixedPart(P0, P1, us));
-                a = ab(1);
-                b = ab(2);
-            else
-                us = opt.ShoulderParameter;
-            end
-
-            B0 = P0;
-            B1 = P0 + a * d0;
-            B2 = P1 - b * d1;
-            B3 = P1;
-
-            P = [B0; B1; B2; B3];
-            U = [0 0 0 0 1 1 1 1];
-            W = ones(4,1);
-            C = geom.NURBSCurve(P, 3, U, W);
-
-            meta = struct();
-            meta.startScale = a;
-            meta.endScale = b;
-            meta.parameter = us;
-            meta.controlPoints = P;
-            if ~isempty(opt.ShoulderPoint)
-                meta.pointError = norm(C.evaluate(us) - S);
-            else
-                meta.pointError = [];
-            end
-        end
-
-        %% -----------------------------------------------------------------
-        % Profile / chain / continuity / fairness tools
-        % ------------------------------------------------------------------
-        function out = profileFromConicChain(segmentDefs, varargin)
-            % Build a profile from a list of Liming conic segment definitions.
-            %
-            % segmentDefs{k} fields:
-            %   P0, P1, T, S
-            % Optional:
-            %   ShoulderParameter
-            pa = inputParser;
-            addParameter(pa, 'Tolerance', 1e-8);
-            parse(pa, varargin{:});
-            tol = pa.Results.Tolerance;
-
-            if ~iscell(segmentDefs)
-                error('Loft:profileFromConicChain', 'segmentDefs must be a cell array.');
-            end
-
-            n = numel(segmentDefs);
-            curves = cell(1, n);
-            metas  = cell(1, n);
-            for k = 1:n
-                spec = segmentDefs{k};
-                if isfield(spec, 'ShoulderParameter')
-                    [curves{k}, metas{k}] = geom.Loft.limingConic( ...
-                        spec.P0, spec.P1, spec.T, spec.S, ...
-                        'ShoulderParameter', spec.ShoulderParameter);
-                else
-                    [curves{k}, metas{k}] = geom.Loft.limingConic( ...
-                        spec.P0, spec.P1, spec.T, spec.S);
-                end
-            end
-
-            continuity = geom.Loft.checkCurveChainContinuity(curves, 'Tolerance', tol);
-
-            out = struct();
-            out.curves = curves;
-            out.meta = metas;
-            out.continuity = continuity;
-        end
-
-        function report = checkCurveJoin(C1, C2, varargin)
-            pa = inputParser;
-            addParameter(pa, 'Tolerance', 1e-8);
-            addParameter(pa, 'TangentTolDeg', 1e-3);
-            parse(pa, varargin{:});
-            opt = pa.Results;
-
-            u1 = C1.domain(2);
-            u2 = C2.domain(1);
-
-            P1 = C1.evaluate(u1);
-            P2 = C2.evaluate(u2);
-
-            d1 = C1.derivative(u1, 1);
-            d2 = C2.derivative(u2, 1);
-
-            posErr = norm(P2 - P1);
-            if norm(d1) < 1e-14 || norm(d2) < 1e-14
-                angDeg = inf;
-            else
-                c = max(-1, min(1, dot(d1, d2)/(norm(d1)*norm(d2))));
-                angDeg = acosd(c);
-            end
-
-            report = struct();
-            report.positionError = posErr;
-            report.tangentAngleDeg = angDeg;
-            report.C0 = posErr <= opt.Tolerance;
-            report.G1 = report.C0 && angDeg <= opt.TangentTolDeg;
-        end
-
-        function report = checkCurveChainContinuity(curves, varargin)
-            pa = inputParser;
-            addParameter(pa, 'Tolerance', 1e-8);
-            addParameter(pa, 'TangentTolDeg', 1e-3);
-            parse(pa, varargin{:});
-            opt = pa.Results;
-
-            if ~iscell(curves)
-                error('Loft:checkCurveChainContinuity', 'curves must be a cell array.');
-            end
-
-            joins = cell(1, max(0, numel(curves)-1));
-            for k = 1:(numel(curves)-1)
-                joins{k} = geom.Loft.checkCurveJoin(curves{k}, curves{k+1}, ...
-                    'Tolerance', opt.Tolerance, ...
-                    'TangentTolDeg', opt.TangentTolDeg);
-            end
-
-            report = struct();
-            report.joins = joins;
-            report.allC0 = all(cellfun(@(s) s.C0, joins));
-            report.allG1 = all(cellfun(@(s) s.G1, joins));
-        end
-
-        function data = curvatureCombData(C, varargin)
-            pa = inputParser;
-            addParameter(pa, 'N', 100);
-            addParameter(pa, 'Scale', 1.0);
-            parse(pa, varargin{:});
-            opt = pa.Results;
-
-            u = linspace(C.domain(1), C.domain(2), max(3, opt.N)).';
-            P = C.evaluate(u);
-            kappa = zeros(size(u));
-            N = zeros(numel(u), 3);
-
-            for i = 1:numel(u)
-                d1 = C.derivative(u(i), 1);
-                d2 = C.derivative(u(i), 2);
-                cp = cross(d1, d2);
-                den = norm(d1)^3;
-                if den < 1e-14
-                    kappa(i) = 0;
-                else
-                    kappa(i) = norm(cp) / den;
-                end
-                t = d1 / max(norm(d1), 1e-14);
-                n = d2 - dot(d2, t) * t;
-                if norm(n) < 1e-14
-                    N(i,:) = [0 0 0];
-                else
-                    N(i,:) = n / norm(n);
-                end
-            end
-
-            data = struct();
-            data.u = u;
-            data.points = P;
-            data.curvature = kappa;
-            data.normals = N;
-            data.combTips = P + opt.Scale * kappa .* N;
-        end
-
-        function info = monotonicityReport(C, axisName, varargin)
-            pa = inputParser;
-            addParameter(pa, 'N', 250);
-            addParameter(pa, 'Tol', 1e-10);
-            parse(pa, varargin{:});
-            opt = pa.Results;
-
-            idx = geom.Loft.axisNameToIndex(axisName);
-            u = linspace(C.domain(1), C.domain(2), max(10, opt.N)).';
-            P = C.evaluate(u);
-            vals = P(:, idx);
-            dv = diff(vals);
-
-            info = struct();
-            info.axis = axisName;
-            info.minDelta = min(dv);
-            info.maxDelta = max(dv);
-            info.isNondecreasing = all(dv >= -opt.Tol);
-            info.isNonincreasing = all(dv <=  opt.Tol);
-            info.isStrictlyIncreasing = all(dv >  opt.Tol);
-            info.isStrictlyDecreasing = all(dv < -opt.Tol);
-        end
-
-        %% -----------------------------------------------------------------
-        % Section construction tools
-        % ------------------------------------------------------------------
-        function [C, meta] = buildSectionBranch(P0, P1, shoulderPoint, varargin)
-            pa = inputParser;
-            addParameter(pa, 'StartDirection', []);
-            addParameter(pa, 'EndDirection', []);
-            addParameter(pa, 'TangentIntersection', []);
-            addParameter(pa, 'Method', 'liming');
-            addParameter(pa, 'ShoulderParameter', []);
-            addParameter(pa, 'CubicFallback', true);
-            parse(pa, varargin{:});
-            opt = pa.Results;
-
-            P0 = geom.Loft.ensure3DRow(P0);
-            P1 = geom.Loft.ensure3DRow(P1);
-            S  = geom.Loft.ensure3DRow(shoulderPoint);
-
-            if isempty(opt.TangentIntersection)
-                if isempty(opt.StartDirection) || isempty(opt.EndDirection)
-                    error('Loft:buildSectionBranch', ...
-                        'Provide TangentIntersection or both StartDirection and EndDirection.');
-                end
-                frame = geom.Loft.makeLocalPlaneFrameFromPoints(P0, P1, S);
-                p02 = geom.Loft.toPlane2D(P0, frame);
-                p12 = geom.Loft.toPlane2D(P1, frame);
-                s2  = geom.Loft.toPlane2D(S, frame);
-                d02 = geom.Loft.toPlane2D(frame.origin + geom.Loft.ensure3DRow(opt.StartDirection), frame) ...
-                    - geom.Loft.toPlane2D(frame.origin, frame);
-                d12 = geom.Loft.toPlane2D(frame.origin + geom.Loft.ensure3DRow(opt.EndDirection), frame) ...
-                    - geom.Loft.toPlane2D(frame.origin, frame);
-                [t2, ~, ~] = geom.Loft.lineIntersection2D(p02, d02, p12, d12);
-                T = geom.Loft.fromPlane2D(t2, frame);
-            else
-                T = geom.Loft.ensure3DRow(opt.TangentIntersection);
-            end
-
-            switch lower(strtrim(opt.Method))
-                case 'liming'
-                    try
-                        [C, meta] = geom.Loft.limingConic(P0, P1, T, S, ...
-                            'ShoulderParameter', opt.ShoulderParameter);
-                        meta.methodUsed = 'liming';
-                    catch ME
-                        if ~opt.CubicFallback
-                            rethrow(ME);
-                        end
-                        d0 = T - P0;
-                        d1 = T - P1;
-                        [C, meta] = geom.Loft.tangentControlledCubic(P0, P1, d0, d1, ...
-                            'ShoulderPoint', S, 'ShoulderParameter', 0.5);
-                        meta.methodUsed = 'cubicFallback';
-                        meta.originalError = ME.message;
-                    end
-                case {'cubic', 'hermite'}
-                    if isempty(opt.TangentIntersection)
-                        d0 = opt.StartDirection;
-                        d1 = opt.EndDirection;
-                    else
-                        d0 = T - P0;
-                        d1 = T - P1;
-                    end
-                    [C, meta] = geom.Loft.tangentControlledCubic(P0, P1, d0, d1, ...
-                        'ShoulderPoint', S, 'ShoulderParameter', 0.5);
-                    meta.methodUsed = 'cubic';
-                otherwise
-                    error('Loft:buildSectionBranch', 'Unknown branch method "%s".', opt.Method);
-            end
-        end
-
-
-        %% -----------------------------------------------------------------
-        % Helpers
-        % ------------------------------------------------------------------
-        function idx = axisNameToIndex(axisName)
-            if isstring(axisName), axisName = char(axisName); end
-            switch lower(strtrim(axisName))
-                case 'x', idx = 1;
-                case 'y', idx = 2;
-                case 'z', idx = 3;
-                otherwise
-                    error('Loft:axisNameToIndex', 'Unknown axis "%s".', axisName);
-            end
-        end
-
-        function P = ensure3DPoints(P)
-            if isempty(P)
-                P = zeros(0,3);
-                return;
-            end
-            if size(P,2) ~= 3
-                error('Loft:ensure3DPoints', 'Points must be Nx3.');
-            end
-        end
-
-        function p = ensure3DRow(p)
-            p = p(:).';
-            if numel(p) ~= 3
-                error('Loft:ensure3DRow', 'Point/vector must have 3 elements.');
-            end
-        end
-
         function [w, info] = solveLimingWeightAtParameter(P0, P1, T, S, u, tol)
-            if nargin < 6 || isempty(tol), tol = 1e-12; end
+            if nargin < 6 || isempty(tol)
+                tol = 1e-12;
+            end
+
             B0 = (1-u)^2;
             B1 = 2*u*(1-u);
             B2 = u^2;
@@ -745,6 +397,7 @@ classdef Loft
                     cands(end+1) = num / den; %#ok<AGROW>
                 end
             end
+
             if isempty(cands)
                 error('Loft:solveLimingWeightAtParameter', ...
                     'Could not determine middle weight from supplied geometry.');
@@ -752,12 +405,10 @@ classdef Loft
 
             w = median(cands);
             residuals = abs(cands - w);
-            if max(residuals) > max(1e-8, 100*tol)
-                % Keep going, but report.
-            end
+
             if ~(isfinite(w) && w > 0)
                 error('Loft:solveLimingWeightAtParameter', ...
-                    'Computed middle weight is invalid: w = %.16g. Check P0/P1/T/S geometry.', w);
+                    'Computed middle weight is invalid: w = %.16g.', w);
             end
 
             info = struct();
@@ -766,12 +417,18 @@ classdef Loft
         end
 
         function [us, w, info] = solveLimingShoulderParameter(P0, P1, T, S, tol)
-            if nargin < 5 || isempty(tol), tol = 1e-10; end
+            if nargin < 5 || isempty(tol)
+                tol = 1e-10;
+            end
 
             usGrid = linspace(1e-4, 1-1e-4, 3000);
             best = inf;
-            us = NaN; w = NaN; bestSpread = inf;
-            candUs = []; candW = []; candSpread = [];
+            us = NaN;
+            w = NaN;
+            bestSpread = inf;
+            candUs = [];
+            candW = [];
+            candSpread = [];
 
             for k = 1:numel(usGrid)
                 u = usGrid(k);
@@ -784,7 +441,6 @@ classdef Loft
                     continue;
                 end
 
-                % Evaluate 2D rational quadratic directly for robustness.
                 B0 = (1-u)^2;
                 B1 = 2*u*(1-u);
                 B2 = u^2;
@@ -810,13 +466,14 @@ classdef Loft
 
             if isempty(candUs) && ~(isfinite(us) && isfinite(w))
                 error('Loft:solveLimingShoulderParameter', ...
-                    'Could not find a valid shoulder parameter in (0,1) with positive middle weight.');
+                    ['Could not find a valid shoulder parameter in (0,1) ' ...
+                     'with positive middle weight.']);
             end
 
             if ~isempty(candUs)
                 [~, idx] = min(candSpread);
                 us = candUs(idx);
-                w  = candW(idx);
+                w = candW(idx);
                 bestSpread = candSpread(idx);
             end
 
@@ -826,778 +483,37 @@ classdef Loft
             info.searchCount = numel(usGrid);
         end
 
-        function A = cubicBezierEndpointScaleSystem(P0, P1, d0, d1, S, u)
-            c1 = 3*(1-u)^2*u * d0(:);
-            c2 = 3*(1-u)*u^2 * (-d1(:));
-            A = [c1, c2];
-            if rank(A) < 2
-                % least-squares still okay outside caller
-            end
-        end
-
-        function rhs = cubicBezierFixedPart(P0, P1, u)
-            rhs = ((1-u)^3 * P0 + u^3 * P1).';
-        end
-
-
-        function [u, P, info] = pointAtStation(C, xVal, varargin)
-            [u, P, info] = geom.Loft.sampleCurveAtStation(C, xVal, 'Axis', 'x', varargin{:});
-        end
-
-        function [u, P, info] = pointAtButtock(C, yVal, varargin)
-            [u, P, info] = geom.Loft.sampleCurveAtStation(C, yVal, 'Axis', 'y', varargin{:});
-        end
-
-        function [u, P, info] = pointAtWaterline(C, zVal, varargin)
-            [u, P, info] = geom.Loft.sampleCurveAtStation(C, zVal, 'Axis', 'z', varargin{:});
-        end
-
-        function frame = makeStationFrame(xStation)
-            frame = geom.Loft.makePlaneFrame([xStation 0 0], [1 0 0], [0 1 0]);
-        end
-
-        function frame = makeBodyPlanFrame(xStation)
-            frame = geom.Loft.makeStationFrame(xStation);
-        end
-
-        function frame = makeProfileFrame(yButtock)
-            frame = geom.Loft.makePlaneFrame([0 yButtock 0], [0 1 0], [1 0 0]);
-        end
-
-        function frame = makePlanFrame(zWaterline)
-            frame = geom.Loft.makePlaneFrame([0 0 zWaterline], [0 0 1], [1 0 0]);
-        end
-
-        function uv = projectCurveToPlane(C, frame, varargin)
-            nPts = 200;
-            if ~isempty(varargin), nPts = varargin{1}; end
-            u = linspace(C.domain(1), C.domain(2), nPts).';
-            P = C.evaluate(u);
-            uv = geom.Loft.toPlane2D(P, frame);
-        end
-
-        function C = constructInPlane(builder, frame)
-            if isa(builder, 'function_handle')
-                uv = builder(frame);
-            else
-                uv = builder;
-            end
-            if size(uv,2) ~= 2
-                error('Loft:constructInPlane', 'Expected Nx2 UV points or a function handle returning them.');
-            end
-            P = geom.Loft.fromPlane2D(uv, frame);
-            C = geom.NURBSCurve.globalInterp(P, min(3, size(P,1)-1), 'centripetal');
-        end
-
-        function out = joinCurveChain(curves, varargin)
-            out = struct();
-            out.curves = curves(:);
-            out.report = geom.Loft.checkCurveChainContinuity(curves, varargin{:});
-        end
-
-        function [uGlobal, P, info] = sampleCurveChainAtCoordinate(curves, value, varargin)
-            axisName = 'x';
-            if ~isempty(varargin)
-                for k = 1:2:numel(varargin)
-                    if strcmpi(varargin{k}, 'Axis'), axisName = varargin{k+1}; end
-                end
-            end
-            best = []
-            ;
-            for i = 1:numel(curves)
-                try
-                    [u, pt, infok] = geom.Loft.sampleCurveAtStation(curves{i}, value, 'Axis', axisName);
-                    if isempty(best) || abs(infok.residual) < abs(best.info.residual)
-                        best.u = u; best.P = pt; best.info = infok; best.idx = i;
-                    end
-                catch
-                end
-            end
-            if isempty(best)
-                error('Loft:sampleCurveChainAtCoordinate', 'No chain segment could be sampled at the requested coordinate.');
-            end
-            uGlobal = [best.idx, best.u];
-            P = best.P;
-            info = best.info;
-            info.segmentIndex = best.idx;
-        end
-
-        function h = plotCurveChain(curves, varargin)
-            h = gobjects(numel(curves),1);
-            for i = 1:numel(curves)
-                h(i) = curves{i}.plot([], varargin{:});
-                hold on;
-            end
-        end
-
-        function L = curveChainArcLength(curves)
-            L = 0;
-            for i = 1:numel(curves)
-                L = L + curves{i}.arcLength();
-            end
-        end
-
-        function out = reparameterizeCurveChainByArcLength(curves, nSamples)
-            if nargin < 2 || isempty(nSamples), nSamples = 200; end
-            totalL = geom.Loft.curveChainArcLength(curves);
-            sBreak = zeros(numel(curves)+1,1);
-            for i = 1:numel(curves)
-                sBreak(i+1) = sBreak(i) + curves{i}.arcLength();
-            end
-            out = struct('totalLength', totalL, 'sBreaks', sBreak, 'nSamples', nSamples);
-        end
-
-        function h = plotCurvatureComb(C, varargin)
-            data = geom.Loft.curvatureCombData(C, varargin{:});
-            P = data.points; Q = data.combTips;
-            holdState = ishold; hold on;
-            plot3(P(:,1), P(:,2), P(:,3), 'k-');
-            h = gobjects(size(P,1),1);
-            for i = 1:size(P,1)
-                h(i) = plot3([P(i,1), Q(i,1)], [P(i,2), Q(i,2)], [P(i,3), Q(i,3)], 'r-');
-            end
-            if ~holdState, hold off; end
-        end
-
-        function h = plotSlopeComb(C, varargin)
-            nPts = 100; scale = 0.1;
-            for k = 1:2:numel(varargin)
-                switch lower(varargin{k})
-                    case 'npts', nPts = varargin{k+1};
-                    case 'scale', scale = varargin{k+1};
-                end
-            end
-            u = linspace(C.domain(1), C.domain(2), nPts).';
-            P = C.evaluate(u); T = C.tangent(u);
-            holdState = ishold; hold on;
-            plot3(P(:,1),P(:,2),P(:,3),'k-');
-            h = gobjects(size(P,1),1);
-            for i = 1:size(P,1)
-                q = P(i,:) + scale*T(i,:);
-                h(i) = plot3([P(i,1),q(1)],[P(i,2),q(2)],[P(i,3),q(3)],'b-');
-            end
-            if ~holdState, hold off; end
-        end
-
-        function rpt = compareSectionFamily(sections, varargin)
-            nSamp = 101;
-            if ~isempty(varargin), nSamp = varargin{1}; end
-            rpt = struct();
-            rpt.count = numel(sections);
-            rpt.area = zeros(numel(sections),1);
-            rpt.height = zeros(numel(sections),1);
-            rpt.width = zeros(numel(sections),1);
-            for i = 1:numel(sections)
-                sec = sections{i};
-                if isstruct(sec) && isfield(sec,'upperCurve') && isfield(sec,'lowerCurve')
-                    Cu = sec.upperCurve; Cl = sec.lowerCurve;
-                elseif isstruct(sec) && isfield(sec,'upper') && isfield(sec,'lower')
-                    Cu = sec.upper; Cl = sec.lower;
-                else
-                    continue;
-                end
-                uu = linspace(Cu.domain(1), Cu.domain(2), nSamp).';
-                ul = linspace(Cl.domain(1), Cl.domain(2), nSamp).';
-                Pu = Cu.evaluate(uu); Pl = Cl.evaluate(ul);
-                poly = [Pu(:,2:3); flipud(Pl(:,2:3))];
-                rpt.area(i) = polyarea(poly(:,1), poly(:,2));
-                rpt.height(i) = max([Pu(:,3);Pl(:,3)]) - min([Pu(:,3);Pl(:,3)]);
-                rpt.width(i) = max([Pu(:,2);Pl(:,2)]) - min([Pu(:,2);Pl(:,2)]);
-            end
-            rpt.areaDiff = diff(rpt.area);
-            rpt.heightDiff = diff(rpt.height);
-            rpt.widthDiff = diff(rpt.width);
-        end
-
-        function rpt = areaProgressionReport(sections, varargin)
-            rpt = geom.Loft.compareSectionFamily(sections, varargin{:});
-            rpt.metric = 'area';
-        end
-
-        function rpt = breadthHeightProgressionReport(sections, varargin)
-            rpt = geom.Loft.compareSectionFamily(sections, varargin{:});
-            rpt.metric = 'breadth_height';
-        end
-
-        function idx = detectInflections(C, varargin)
-            nPts = 500;
-            if ~isempty(varargin), nPts = varargin{1}; end
-            u = linspace(C.domain(1), C.domain(2), nPts).';
-            kappa = C.curvature(u);
-            dk = diff(sign(diff(kappa)));
-            idx = find(dk ~= 0) + 1;
-        end
-
-        function rpt = detectWiggles(C, varargin)
-            nPts = 500; axisName = 'x';
-            for k = 1:2:numel(varargin)
-                switch lower(varargin{k})
-                    case 'npts', nPts = varargin{k+1};
-                    case 'axis', axisName = varargin{k+1};
-                end
-            end
-            P = C.evaluate(linspace(C.domain(1), C.domain(2), nPts).');
-            idx = geom.Loft.axisNameToIndex(axisName);
-            d = diff(P(:,idx));
-            rpt = struct();
-            rpt.signChanges = find(diff(sign(d)) ~= 0) + 1;
-            rpt.count = numel(rpt.signChanges);
-        end
-
-        function [C, meta] = buildUpperSectionBranch(P0, P1, shoulderPoint, varargin)
-            [C, meta] = geom.Loft.buildSectionBranch(P0, P1, shoulderPoint, varargin{:});
-        end
-
-        function [C, meta] = buildLowerSectionBranch(P0, P1, shoulderPoint, varargin)
-            [C, meta] = geom.Loft.buildSectionBranch(P0, P1, shoulderPoint, varargin{:});
-        end
-
-        function sec = buildSymmetricBodySection(Ptop, Pmax, Pbot, Sup, Slo, varargin)
-            sec = struct();
-            [sec.upperCurve, sec.upperMeta] = geom.Loft.buildSectionBranch(Ptop, Pmax, Sup, varargin{:});
-            [sec.lowerCurve, sec.lowerMeta] = geom.Loft.buildSectionBranch(Pmax, Pbot, Slo, varargin{:});
-        end
-
-        function sec = buildNoseCapSection(varargin)
-            sec = geom.Loft.buildSymmetricBodySection(varargin{:});
-            sec.kind = 'nose_cap';
-        end
-
-        function sec = buildTailConeSection(varargin)
-            sec = geom.Loft.buildSymmetricBodySection(varargin{:});
-            sec.kind = 'tail_cone';
-        end
-
-        function C = buildCanopyRailSection(segmentDefs, varargin)
-            out = geom.Loft.profileFromConicChain(segmentDefs, varargin{:});
-            C = out;
-        end
-
-        function [C, meta] = buildPreferredConicOrCubic(P0, P1, T, S, varargin)
-            try
-                [C, meta] = geom.Loft.limingConic(P0, P1, T, S, varargin{:});
-                meta.method = 'conic';
-            catch ME
-                d0 = T - P0; d1 = P1 - T;
-                [C, meta] = geom.Loft.tangentControlledCubic(P0, P1, d0, d1, 'ShoulderPoint', S);
-                meta.method = 'cubic_fallback';
-                meta.fallbackCause = ME.message;
-            end
-        end
-
-        function pair = buildMatchedBranchPair(specA, specB, varargin)
-            pair = geom.Loft.matchConicPair(specA, specB, varargin{:});
-        end
-
-        function [C, meta] = buildBranchFromEndpointsTangentsShoulder(P0, P1, T0, T1, S, varargin)
-            [C, meta] = geom.Loft.tangentControlledCubic(P0, P1, T0, T1, 'ShoulderPoint', S, varargin{:});
-        end
-
-        function report = checkSharedBoundary(S1, edge1, S2, edge2, varargin)
-            report = geom.Loft.checkSurfaceJoin(S1, edge1, S2, edge2, varargin{:});
-        end
-
-        function [S1m, S2m, info] = enforceSharedBoundarySampling(S1, edge1, S2, edge2, varargin)
-            [S1m, S2m, info] = geom.Loft.enforceSharedBoundary(S1, edge1, S2, edge2, varargin{:});
-        end
-
-        function net = buildPatchNetwork(patches, topology)
-            net = struct('patches',{patches}, 'topology', topology);
-            net.adjacency = geom.Loft.reportPatchAdjacency(topology);
-        end
-
-        function adj = reportPatchAdjacency(topology)
-            adj = struct();
-            adj.count = size(topology,1);
-            adj.rows = topology;
-        end
-
-        function parts = splitSurfaceForPatchLayout(S, varargin)
-            parts = {S};
-            for k = 1:2:numel(varargin)
-                switch lower(varargin{k})
-                    case 'u'
-                        vals = sort(varargin{k+1}(:).');
-                        curr = {S};
-                        for v = vals
-                            next = {};
-                            for i = 1:numel(curr)
-                                try
-                                    [a,b] = curr{i}.splitU(v);
-                                    next = [next,{a,b}]; %#ok<AGROW>
-                                catch
-                                    next = [next,{curr{i}}]; %#ok<AGROW>
-                                end
-                            end
-                            curr = next;
-                        end
-                        parts = curr;
-                    case 'v'
-                        vals = sort(varargin{k+1}(:).');
-                        curr = parts;
-                        for v = vals
-                            next = {};
-                            for i = 1:numel(curr)
-                                try
-                                    [a,b] = curr{i}.splitV(v);
-                                    next = [next,{a,b}]; %#ok<AGROW>
-                                catch
-                                    next = [next,{curr{i}}]; %#ok<AGROW>
-                                end
-                            end
-                            curr = next;
-                        end
-                        parts = curr;
-                end
-            end
-        end
-
-        function rpt = reportConicValidity(meta)
-            rpt = meta;
-            rpt.isValid = isstruct(meta) && (~isfield(meta,'weight') || meta.weight > 0);
-        end
-
-        function rpt = reportCurveChainContinuity(curves, varargin)
-            rpt = geom.Loft.checkCurveChainContinuity(curves, varargin{:});
-        end
-
-        function rpt = reportSectionQuality(sec)
-            rpt = struct();
-            if isfield(sec,'upperCurve') && isfield(sec,'lowerCurve')
-                pts = [sec.upperCurve.evaluate(linspace(sec.upperCurve.domain(1), sec.upperCurve.domain(2), 101).');
-                       sec.lowerCurve.evaluate(linspace(sec.lowerCurve.domain(1), sec.lowerCurve.domain(2), 101).')];
-                rpt.boundingBox = [min(pts,[],1); max(pts,[],1)];
-            else
-                rpt.boundingBox = [];
-            end
-        end
-
-        function rpt = reportGuideCurveSampling(curves, values, axisName)
-            if nargin < 3 || isempty(axisName), axisName = 'x'; end
-            rpt = struct();
-            rpt.samples = cell(numel(curves),1);
-            for i = 1:numel(curves)
-                tmp = zeros(numel(values),3);
-                for j = 1:numel(values)
-                    [~, tmp(j,:)] = geom.Loft.sampleCurveAtStation(curves{i}, values(j), 'Axis', axisName);
-                end
-                rpt.samples{i} = tmp;
-            end
-        end
-
-        function rpt = reportSurfaceFamilyConsistency(patches, topology, varargin)
-            rpt = geom.Loft.checkSurfaceFamilyContinuity(patches, topology, varargin{:});
-        end
-
-        function [curveOut, meta] = extractWaterlineCurve(S, zVal, varargin)
-            [curveOut, meta] = geom.Loft.extractCoordinateCurveFromSurface(S, zVal, 'z', varargin{:});
-        end
-
-        function [curveOut, meta] = extractButtockCurve(S, yVal, varargin)
-            [curveOut, meta] = geom.Loft.extractCoordinateCurveFromSurface(S, yVal, 'y', varargin{:});
-        end
-
-        function [curveOut, meta] = extractProfileCurve(S, xVal, varargin)
-            [curveOut, meta] = geom.Loft.extractCoordinateCurveFromSurface(S, xVal, 'x', varargin{:});
-        end
-
-        function report = checkSurfaceJoin(S1, edge1, S2, edge2, varargin)
-            opt = struct('Tolerance', 1e-6, 'NSamples', 41, 'Mode', 'C1');
-            for k = 1:2:numel(varargin)
-                opt.(varargin{k}) = varargin{k+1};
-            end
-            [P1, uv1, dAlong1, dCross1, d2Cross1] = geom.Loft.sampleSurfaceEdgeData(S1, edge1, opt.NSamples);
-            [P2s, uv2s, dAlong2s, dCross2s, d2Cross2s] = geom.Loft.sampleSurfaceEdgeData(S2, edge2, opt.NSamples);
-            cmp = geom.Loft.comparePointSequences(P1, P2s);
-            P2 = geom.Loft.orientPointSequence(P2s, cmp.orientation);
-            uv2 = geom.Loft.orientPointSequence(uv2s, cmp.orientation);
-            dAlong2 = geom.Loft.orientPointSequence(dAlong2s, cmp.orientation);
-            dCross2 = geom.Loft.orientPointSequence(dCross2s, cmp.orientation);
-            d2Cross2 = geom.Loft.orientPointSequence(d2Cross2s, cmp.orientation);
-
-            tan1 = dAlong1 ./ max(vecnorm(dAlong1,2,2), eps);
-            tan2 = dAlong2 ./ max(vecnorm(dAlong2,2,2), eps);
-            n1 = cross(dAlong1, dCross1, 2); n1 = n1 ./ max(vecnorm(n1,2,2), eps);
-            n2 = cross(dAlong2, dCross2, 2); n2 = n2 ./ max(vecnorm(n2,2,2), eps);
-            % For smooth join, cross derivatives should oppose after orientation.
-            c1err = vecnorm(dCross1 + dCross2, 2, 2);
-            c2err = vecnorm(d2Cross1 - d2Cross2, 2, 2);
-            report = struct();
-            report.orientation = cmp.orientation;
-            report.maxPosError = max(vecnorm(P1-P2,2,2));
-            report.rmsPosError = sqrt(mean(vecnorm(P1-P2,2,2).^2));
-            report.maxTangentAngleDeg = max(real(acosd(max(-1,min(1,sum(tan1.*tan2,2))))));
-            report.maxNormalAngleDeg = max(real(acosd(max(-1,min(1,abs(sum(n1.*n2,2)))))));
-            report.maxC1Error = max(c1err);
-            report.maxC2Error = max(c2err);
-            report.isC0 = report.maxPosError <= opt.Tolerance;
-            report.isG1 = report.isC0 && report.maxNormalAngleDeg <= 1e-2;
-            report.isC1 = report.isC0 && report.maxC1Error <= 10*opt.Tolerance;
-            report.isC2 = report.isC1 && report.maxC2Error <= 100*opt.Tolerance;
-            report.samples1 = uv1;
-            report.samples2 = uv2;
-            report.mode = opt.Mode;
-        end
-
-        function report = checkG1Join(S1, edge1, S2, edge2, varargin)
-            report = geom.Loft.checkSurfaceJoin(S1, edge1, S2, edge2, 'Mode', 'G1', varargin{:});
-        end
-
-        function reports = checkSurfaceFamilyContinuity(patches, topology, varargin)
-            if istable(topology)
-                topology = table2cell(topology);
-            end
-            reports = cell(size(topology,1),1);
-            for i = 1:size(topology,1)
-                if isnumeric(topology{i,1})
-                    i1 = topology{i,1}; e1 = topology{i,2}; i2 = topology{i,3}; e2 = topology{i,4};
-                else
-                    i1 = topology{i,2}; e1 = topology{i,3}; i2 = topology{i,5}; e2 = topology{i,6};
-                end
-                reports{i} = geom.Loft.checkSurfaceJoin(patches{i1}, e1, patches{i2}, e2, varargin{:});
-            end
-        end
-
-        function [S1m, S2m, info] = matchBoundaryParameterization(S1, edge1, S2, edge2, varargin)
-            [S1m, S2m, info] = geom.Loft.enforceSharedBoundary(S1, edge1, S2, edge2, varargin{:});
-        end
-
-        function [S1m, S2m, info] = enforceSharedBoundary(S1, edge1, S2, edge2, varargin)
-            opt = struct('Master', 1, 'Average', false);
-            for k = 1:2:numel(varargin)
-                opt.(varargin{k}) = varargin{k+1};
-            end
-            info = struct();
-            [B1,W1] = geom.Loft.getSurfaceEdgeControlData(S1, edge1);
-            [B2,W2] = geom.Loft.getSurfaceEdgeControlData(S2, edge2);
-            cmp = geom.Loft.comparePointSequences(B1, B2);
-            B2o = geom.Loft.orientPointSequence(B2, cmp.orientation);
-            W2o = geom.Loft.orientScalarSequence(W2, cmp.orientation);
-            if opt.Average
-                B = 0.5*(B1 + B2o);
-                W = 0.5*(W1 + W2o);
-            elseif opt.Master == 1
-                B = B1; W = W1;
-            else
-                B = B2o; W = W2o;
-            end
-            S1m = geom.Loft.setSurfaceEdgeControlData(S1, edge1, B, W);
-            Bout2 = geom.Loft.orientPointSequence(B, cmp.orientation);
-            Wout2 = geom.Loft.orientScalarSequence(W, cmp.orientation);
-            S2m = geom.Loft.setSurfaceEdgeControlData(S2, edge2, Bout2, Wout2);
-            info.orientation = cmp.orientation;
-            info.maxInitialEdgeMismatch = cmp.bestError;
-        end
-
-        function [S1m, S2m, info] = enforceG1AcrossJoin(S1, edge1, S2, edge2, varargin)
-            [S1m, S2m, info] = geom.Loft.enforceC1AcrossJoin(S1, edge1, S2, edge2, varargin{:}, 'GeometricOnly', true);
-        end
-
-        function [S1m, S2m, info] = enforceC1AcrossJoin(S1, edge1, S2, edge2, varargin)
-            opt = struct('Master', 1, 'Modify', 'slave', 'GeometricOnly', false);
-            for k = 1:2:numel(varargin)
-                opt.(varargin{k}) = varargin{k+1};
-            end
-            [S1m, S2m, info0] = geom.Loft.enforceSharedBoundary(S1, edge1, S2, edge2, 'Master', opt.Master);
-            [B1, Wb1, I1] = geom.Loft.getSurfaceEdgeControlData(S1m, edge1);
-            [B2, Wb2, I2] = geom.Loft.getSurfaceEdgeControlData(S2m, edge2);
-            cmp = geom.Loft.comparePointSequences(B1, B2);
-            [N1, Wn1] = geom.Loft.getSurfaceAdjacentEdgeControlData(S1m, edge1, 1);
-            [N2, Wn2] = geom.Loft.getSurfaceAdjacentEdgeControlData(S2m, edge2, 1);
-            N2 = geom.Loft.orientPointSequence(N2, cmp.orientation);
-            Wn2 = geom.Loft.orientScalarSequence(Wn2, cmp.orientation);
-            if strcmpi(opt.Modify, 'both')
-                D = 0.5*((N1-B1) - (N2-B1));
-                N1new = B1 + D;
-                N2new = B1 - D;
-            else
-                if opt.Master == 1
-                    N1new = N1;
-                    D = N1 - B1;
-                    if opt.GeometricOnly
-                        mag = vecnorm(N2-B1,2,2);
-                        dir = -D ./ max(vecnorm(D,2,2),eps);
-                        N2new = B1 + dir .* mag;
-                    else
-                        N2new = B1 - D;
-                    end
-                else
-                    N2new = N2;
-                    D = N2 - B1;
-                    if opt.GeometricOnly
-                        mag = vecnorm(N1-B1,2,2);
-                        dir = -D ./ max(vecnorm(D,2,2),eps);
-                        N1new = B1 + dir .* mag;
-                    else
-                        N1new = B1 - D;
-                    end
-                end
-            end
-            if ~strcmpi(opt.Modify, 'slave') || opt.Master ~= 1
-                S1m = geom.Loft.setSurfaceAdjacentEdgeControlData(S1m, edge1, 1, N1new, Wn1);
-            end
-            N2set = geom.Loft.orientPointSequence(N2new, cmp.orientation);
-            W2set = geom.Loft.orientScalarSequence(Wn2, cmp.orientation);
-            S2m = geom.Loft.setSurfaceAdjacentEdgeControlData(S2m, edge2, 1, N2set, W2set);
-            info = info0;
-            info.note = 'First interior control row/column adjusted for approximate C1/G1 continuity.';
-        end
-
-        function [S1m, S2m, info] = enforceC2AcrossJoin(S1, edge1, S2, edge2, varargin)
-            [S1m, S2m, info] = geom.Loft.enforceC1AcrossJoin(S1, edge1, S2, edge2, varargin{:});
-            [B1, ~] = geom.Loft.getSurfaceEdgeControlData(S1m, edge1);
-            [R11, W11] = geom.Loft.getSurfaceAdjacentEdgeControlData(S1m, edge1, 1);
-            [R12, W12] = geom.Loft.getSurfaceAdjacentEdgeControlData(S1m, edge1, 2);
-            [R21, W21] = geom.Loft.getSurfaceAdjacentEdgeControlData(S2m, edge2, 1);
-            [R22, W22] = geom.Loft.getSurfaceAdjacentEdgeControlData(S2m, edge2, 2);
-            cmp = geom.Loft.comparePointSequences(B1, geom.Loft.getSurfaceEdgeControlData(S2m, edge2));
-            R21 = geom.Loft.orientPointSequence(R21, cmp.orientation);
-            R22 = geom.Loft.orientPointSequence(R22, cmp.orientation);
-            % Approximate mirrored second row relation.
-            D1 = R11 - B1;
-            target2 = B1 - 2*D1 + (R12 - R11);
-            R22new = target2;
-            R22set = geom.Loft.orientPointSequence(R22new, cmp.orientation);
-            S2m = geom.Loft.setSurfaceAdjacentEdgeControlData(S2m, edge2, 2, R22set, geom.Loft.orientScalarSequence(W22, cmp.orientation));
-            info.note = 'Approximate second-row adjustment applied for heuristic C2 continuity.';
-        end
-
-        function [curveOut, meta] = extractCoordinateCurveFromSurface(S, coordValue, axisName, varargin)
-            nPrimary = 81; nSecondary = 81; degree = 3;
-            for k = 1:2:numel(varargin)
-                switch lower(varargin{k})
-                    case 'nprimary', nPrimary = varargin{k+1};
-                    case 'nsecondary', nSecondary = varargin{k+1};
-                    case 'degree', degree = varargin{k+1};
-                end
-            end
-            ax = geom.Loft.axisNameToIndex(axisName);
-            % Sample isocurves in u-direction and solve each for coordinate.
-            vVals = linspace(S.domainV(1), S.domainV(2), nPrimary).';
-            pts = zeros(nPrimary,3); keep = false(nPrimary,1);
-            for i = 1:nPrimary
-                uGrid = linspace(S.domainU(1), S.domainU(2), nSecondary).';
-                P = S.evaluate(uGrid, vVals(i)*ones(size(uGrid)));
-                f = P(:,ax) - coordValue;
-                idx = find(f(1:end-1).*f(2:end) <= 0, 1, 'first');
-                if isempty(idx), continue; end
-                t = f(idx) / (f(idx) - f(idx+1) + eps);
-                pts(i,:) = P(idx,:) + t*(P(idx+1,:)-P(idx,:));
-                keep(i) = true;
-            end
-            pts = pts(keep,:);
-            if size(pts,1) < 2
-                error('Loft:extractCoordinateCurveFromSurface', 'Could not extract enough points from surface at requested coordinate.');
-            end
-            curveOut = geom.NURBSCurve.globalInterp(pts, min(degree,size(pts,1)-1), 'centripetal');
-            meta = struct('points', pts, 'axis', axisName, 'value', coordValue);
-        end
-
-        function [pts, uv, dAlong, dCross, d2Cross] = sampleSurfaceEdgeData(S, edgeName, n)
-            switch lower(strtrim(edgeName))
-                case {'i1','imin'}
-                    u = repmat(S.domainU(1), n, 1); v = linspace(S.domainV(1), S.domainV(2), n).';
-                    alongIsV = true; crossSign = +1;
-                case {'in','imax','iend'}
-                    u = repmat(S.domainU(2), n, 1); v = linspace(S.domainV(1), S.domainV(2), n).';
-                    alongIsV = true; crossSign = -1;
-                case {'j1','jmin'}
-                    v = repmat(S.domainV(1), n, 1); u = linspace(S.domainU(1), S.domainU(2), n).';
-                    alongIsV = false; crossSign = +1;
-                case {'jn','jmax','jend'}
-                    v = repmat(S.domainV(2), n, 1); u = linspace(S.domainU(1), S.domainU(2), n).';
-                    alongIsV = false; crossSign = -1;
-                otherwise
-                    error('Loft:sampleSurfaceEdgeData', 'Unknown edge name %s.', edgeName);
-            end
-            pts = S.evaluate(u, v);
-            uv = [u v];
-            dAlong = zeros(n,3); dCross = zeros(n,3); d2Cross = zeros(n,3);
-            for i = 1:n
-                SKL = S.derivatives(u(i), v(i), 2);
-                Su = SKL{2,1}; Sv = SKL{1,2}; Suu = SKL{3,1}; Svv = SKL{1,3};
-                if alongIsV
-                    dAlong(i,:) = Sv;
-                    dCross(i,:) = crossSign * Su;
-                    d2Cross(i,:) = Suu;
-                else
-                    dAlong(i,:) = Su;
-                    dCross(i,:) = crossSign * Sv;
-                    d2Cross(i,:) = Svv;
-                end
-            end
-        end
-
-        function cmp = comparePointSequences(P, Q)
-            if iscell(Q), Q = Q{1}; end
-            dSame = vecnorm(P-Q,2,2);
-            dRev = vecnorm(P-flipud(Q),2,2);
-            cmp.sameError = max(dSame);
-            cmp.revError = max(dRev);
-            if cmp.revError < cmp.sameError
-                cmp.orientation = 'reversed'; cmp.bestError = cmp.revError;
-            else
-                cmp.orientation = 'same'; cmp.bestError = cmp.sameError;
-            end
-        end
-
-        function Q = orientPointSequence(P, orientation)
-            switch lower(strtrim(orientation))
-                case 'same'
-                    Q = P;
-                case 'reversed'
-                    Q = flipud(P);
-                otherwise
-                    error('Loft:orientPointSequence', 'Orientation must be same or reversed.');
-            end
-        end
-
-        function q = orientScalarSequence(p, orientation)
-            q = geom.Loft.orientPointSequence(p(:), orientation);
-        end
-
-        function [B,W,info] = getSurfaceEdgeControlData(S, edgeName)
-            P = S.P; W = S.W; info = struct();
-            switch lower(strtrim(edgeName))
-                case {'i1','imin'}
-                    B = squeeze(P(1,:,:)); W = W(1,:).'; info.type = 'row';
-                case {'in','imax','iend'}
-                    B = squeeze(P(end,:,:)); W = W(end,:).'; info.type = 'row';
-                case {'j1','jmin'}
-                    B = squeeze(P(:,1,:)); W = W(:,1); info.type = 'col';
-                case {'jn','jmax','jend'}
-                    B = squeeze(P(:,end,:)); W = W(:,end); info.type = 'col';
-                otherwise
-                    error('Loft:getSurfaceEdgeControlData', 'Unknown edge name %s.', edgeName);
-            end
-        end
-
-        function S2 = setSurfaceEdgeControlData(S, edgeName, B, W)
-            P = S.P; WW = S.W;
-            switch lower(strtrim(edgeName))
-                case {'i1','imin'}
-                    P(1,:,:) = reshape(B, [1 size(B,1) 3]); WW(1,:) = W(:).';
-                case {'in','imax','iend'}
-                    P(end,:,:) = reshape(B, [1 size(B,1) 3]); WW(end,:) = W(:).';
-                case {'j1','jmin'}
-                    P(:,1,:) = reshape(B, [size(B,1) 1 3]); WW(:,1) = W(:);
-                case {'jn','jmax','jend'}
-                    P(:,end,:) = reshape(B, [size(B,1) 1 3]); WW(:,end) = W(:);
-                otherwise
-                    error('Loft:setSurfaceEdgeControlData', 'Unknown edge name %s.', edgeName);
-            end
-            S2 = geom.NURBSSurface(P, S.p, S.q, S.U, S.V, WW);
-            if isprop(S,'trimOuterLoops')
-                try
-                    S2.trimOuterLoops = S.trimOuterLoops; S2.trimInnerLoops = S.trimInnerLoops; S2.trimTolerance = S.trimTolerance;
-                catch
-                end
-            end
-        end
-
-        function [B,W] = getSurfaceAdjacentEdgeControlData(S, edgeName, offset)
-            if nargin < 3, offset = 1; end
-            P = S.P; WW = S.W;
-            switch lower(strtrim(edgeName))
-                case {'i1','imin'}
-                    idx = 1+offset; B = squeeze(P(idx,:,:)); W = WW(idx,:).';
-                case {'in','imax','iend'}
-                    idx = size(P,1)-offset; B = squeeze(P(idx,:,:)); W = WW(idx,:).';
-                case {'j1','jmin'}
-                    idx = 1+offset; B = squeeze(P(:,idx,:)); W = WW(:,idx);
-                case {'jn','jmax','jend'}
-                    idx = size(P,2)-offset; B = squeeze(P(:,idx,:)); W = WW(:,idx);
-                otherwise
-                    error('Loft:getSurfaceAdjacentEdgeControlData', 'Unknown edge name %s.', edgeName);
-            end
-        end
-
-        function S2 = setSurfaceAdjacentEdgeControlData(S, edgeName, offset, B, W)
-            if nargin < 3, offset = 1; end
-            P = S.P; WW = S.W;
-            switch lower(strtrim(edgeName))
-                case {'i1','imin'}
-                    idx = 1+offset; P(idx,:,:) = reshape(B,[1 size(B,1) 3]); WW(idx,:) = W(:).';
-                case {'in','imax','iend'}
-                    idx = size(P,1)-offset; P(idx,:,:) = reshape(B,[1 size(B,1) 3]); WW(idx,:) = W(:).';
-                case {'j1','jmin'}
-                    idx = 1+offset; P(:,idx,:) = reshape(B,[size(B,1) 1 3]); WW(:,idx) = W(:);
-                case {'jn','jmax','jend'}
-                    idx = size(P,2)-offset; P(:,idx,:) = reshape(B,[size(B,1) 1 3]); WW(:,idx) = W(:);
-                otherwise
-                    error('Loft:setSurfaceAdjacentEdgeControlData', 'Unknown edge name %s.', edgeName);
-            end
-            S2 = geom.NURBSSurface(P, S.p, S.q, S.U, S.V, WW);
-            if isprop(S,'trimOuterLoops')
-                try
-                    S2.trimOuterLoops = S.trimOuterLoops; S2.trimInnerLoops = S.trimInnerLoops; S2.trimTolerance = S.trimTolerance;
-                catch
-                end
-            end
-        end
-
-
+        %% -----------------------------------------------------------------
+        % Combine planar guides into a 3D guide
+        % ------------------------------------------------------------------
         function [C3, data] = combinePlanarGuidesTo3D(Cxy, Cxz, varargin)
-            %COMBINEPLANARGUIDESTO3D Build a 3D NURBS curve from XY- and XZ-plane guides.
+            %COMBINEPLANARGUIDESTO3D Interpolate a 3D guide from XY and XZ guides.
             %
-            %   [C3, data] = combinePlanarGuidesTo3D(Cxy, Cxz)
-            %   [C3, data] = combinePlanarGuidesTo3D(Cxy, Cxz, 'Name', value, ...)
+            % This helper:
+            %   1) chooses station samples on a shared axis,
+            %   2) intersects both planar guides with those station planes,
+            %   3) assembles 3D points from the paired projections,
+            %   4) globally interpolates a 3D NURBS curve through those points.
             %
-            % Constructs a 3D guide curve whose XY projection follows Cxy and whose
-            % XZ projection follows Cxz. The default construction uses X as the shared
-            % station coordinate:
-            %
-            %   Pk = [ xk, y_from_Cxy(xk), z_from_Cxz(xk) ]
-            %
-            % and then globally interpolates a NURBS curve through the assembled 3D
-            % points using geom.NURBSCurve.globalInterp.
-            %
-            % Inputs
-            % ------
-            % Cxy : geom.NURBSCurve
-            %     Guide curve expected to lie in the XY plane (z approximately constant).
-            % Cxz : geom.NURBSCurve
-            %     Guide curve expected to lie in the XZ plane (y approximately constant).
-            %
-            % Name/value options
-            % ------------------
-            % 'Axis'            : Shared station axis. Default 'x'.
-            % 'Master'          : 'xy', 'xz', or 'stations'.
-            %                     - 'xy'      : sample stations from Cxy parameters
-            %                     - 'xz'      : sample stations from Cxz parameters
-            %                     - 'stations': use explicit station locations
-            %                     Default 'xy'.
-            % 'NumSamples'      : Number of samples when Master is 'xy' or 'xz'. Default 81.
-            % 'Stations'        : Explicit station vector when Master is 'stations'.
-            % 'Degree'          : Interpolation degree. Default 3.
-            % 'ParameterMethod' : globalInterp parameterization method. Default 'centripetal'.
-            % 'OccurrenceXY'    : Plane-intersection occurrence on Cxy. Default 1.
-            % 'OccurrenceXZ'    : Plane-intersection occurrence on Cxz. Default 1.
-            % 'BracketN'        : Bracketing samples for station intersection. Default 400.
-            % 'Tol'             : Station solve tolerance. Default 1e-12.
-            % 'MaxIter'         : Max solve iterations. Default 60.
-            % 'PlanarityTol'    : Warning tolerance for off-plane deviation. Default 1e-6.
-            % 'RestrictToOverlap' : If true and Master~='stations', clamp sampled stations to
-            %                       the overlapping station range of the two curves. Default true.
-            %
-            % Outputs
-            % -------
-            % C3   : geom.NURBSCurve
-            %     Interpolated 3D NURBS curve.
-            % data : struct with sampled stations, points, and intersection diagnostics.
-            %
-            % Intended use
-            % ------------
-            % Add this as a static helper inside +geom/Loft.m, then call as:
-            %
-            %   [C3, data] = geom.Loft.combinePlanarGuidesTo3D(Cxy, Cxz, ...)
-            %
-            % If kept as a standalone function, call directly by filename.
-            
+            % Name/value pairs:
+            %   'Axis'              : shared station axis ('x','y','z'), default 'x'
+            %   'Master'            : 'xy', 'xz', or 'stations', default 'xy'
+            %   'NumSamples'        : number of station samples, default 31
+            %   'Stations'          : explicit station vector when Master='stations'
+            %   'Degree'            : interpolation degree, default 3
+            %   'ParameterMethod'   : interpolation parameterization, default 'centripetal'
+            %   'OccurrenceXY'      : station-plane occurrence on Cxy, default 1
+            %   'OccurrenceXZ'      : station-plane occurrence on Cxz, default 1
+            %   'BracketN'          : coarse bracketing count, default 400
+            %   'Tol'               : station solve tolerance, default 1e-12
+            %   'MaxIter'           : max station solve iterations, default 60
+            %   'PlanarityTol'      : warning tolerance for off-plane drift, default 1e-6
+            %   'RestrictToOverlap' : clamp to shared axis range, default true
+
             pa = inputParser;
             addParameter(pa, 'Axis', 'x');
             addParameter(pa, 'Master', 'xy');
-            addParameter(pa, 'NumSamples', 81);
+            addParameter(pa, 'NumSamples', 31);
             addParameter(pa, 'Stations', []);
             addParameter(pa, 'Degree', 3);
             addParameter(pa, 'ParameterMethod', 'centripetal');
@@ -1610,18 +526,17 @@ classdef Loft
             addParameter(pa, 'RestrictToOverlap', true);
             parse(pa, varargin{:});
             opt = pa.Results;
-            
+
             master = lower(string(opt.Master));
             axisName = char(lower(string(opt.Axis)));
             if ~ismember(axisName, {'x','y','z'})
-                error('combinePlanarGuidesTo3D:Axis', 'Axis must be ''x'', ''y'', or ''z''.');
+                error('Loft:combinePlanarGuidesTo3D', ...
+                    'Axis must be ''x'', ''y'', or ''z''.');
             end
-            
-            % Lightweight planarity sanity checks.
+
             geom.Loft.checkPlanarity(Cxy, 'xy', axisName, opt.PlanarityTol);
             geom.Loft.checkPlanarity(Cxz, 'xz', axisName, opt.PlanarityTol);
-            
-            % Determine station samples.
+
             switch master
                 case "xy"
                     usMaster = linspace(Cxy.domain(1), Cxy.domain(2), max(2, round(opt.NumSamples)));
@@ -1633,48 +548,54 @@ classdef Loft
                     stations = Pm(:, geom.Loft.axisIndex(axisName));
                 case "stations"
                     if isempty(opt.Stations)
-                        error('combinePlanarGuidesTo3D:Stations', ...
+                        error('Loft:combinePlanarGuidesTo3D', ...
                             'Stations must be supplied when Master is ''stations''.');
                     end
                     stations = opt.Stations(:);
                 otherwise
-                    error('combinePlanarGuidesTo3D:Master', ...
+                    error('Loft:combinePlanarGuidesTo3D', ...
                         'Master must be ''xy'', ''xz'', or ''stations''.');
             end
-            
+
             if opt.RestrictToOverlap && master ~= "stations"
                 overlap = geom.Loft.estimateOverlapRange(Cxy, Cxz, axisName);
                 keep = stations >= overlap(1) & stations <= overlap(2);
                 stations = stations(keep);
                 if numel(stations) < 2
-                    error('combinePlanarGuidesTo3D:Overlap', ...
-                        'Too few sample stations remain in the overlapping %s-range.', upper(axisName));
+                    error('Loft:combinePlanarGuidesTo3D', ...
+                        'Too few station samples remain in the overlapping range.');
                 end
             end
-            
+
             nS = numel(stations);
             P3 = zeros(nS, 3);
             uxy = zeros(nS, 1);
             uxz = zeros(nS, 1);
             infoXY = cell(nS,1);
             infoXZ = cell(nS,1);
-            
+
             for k = 1:nS
                 sk = stations(k);
-            
+
                 [uxy(k), pxy, infoXY{k}] = geom.Loft.sampleCurveAtStation( ...
-                    Cxy, sk, 'Axis', axisName, 'Occurrence', opt.OccurrenceXY, ...
-                    'BracketN', opt.BracketN, 'Tol', opt.Tol, 'MaxIter', opt.MaxIter);
-            
+                    Cxy, sk, 'Axis', axisName, ...
+                    'Occurrence', opt.OccurrenceXY, ...
+                    'BracketN', opt.BracketN, ...
+                    'Tol', opt.Tol, ...
+                    'MaxIter', opt.MaxIter);
+
                 [uxz(k), pxz, infoXZ{k}] = geom.Loft.sampleCurveAtStation( ...
-                    Cxz, sk, 'Axis', axisName, 'Occurrence', opt.OccurrenceXZ, ...
-                    'BracketN', opt.BracketN, 'Tol', opt.Tol, 'MaxIter', opt.MaxIter);
-            
+                    Cxz, sk, 'Axis', axisName, ...
+                    'Occurrence', opt.OccurrenceXZ, ...
+                    'BracketN', opt.BracketN, ...
+                    'Tol', opt.Tol, ...
+                    'MaxIter', opt.MaxIter);
+
                 P3(k,:) = geom.Loft.mergeProjectedPoint(pxy, pxz, axisName, sk);
             end
-            
-            % Remove exact/near duplicates that can arise from repeated stations.
-            [P3u, ia] = uniquetol(P3, max(1e-12, 10*opt.Tol), 'ByRows', true, 'DataScale', 1);
+
+            [P3u, ia] = uniquetol(P3, max(1e-12, 10*opt.Tol), ...
+                'ByRows', true, 'DataScale', 1);
             [ia, order] = sort(ia);
             P3u = P3u(order,:);
             stations = stations(ia);
@@ -1682,15 +603,15 @@ classdef Loft
             uxz = uxz(ia);
             infoXY = infoXY(ia);
             infoXZ = infoXZ(ia);
-            
+
             if size(P3u,1) < 2
-                error('combinePlanarGuidesTo3D:Degenerate', ...
+                error('Loft:combinePlanarGuidesTo3D', ...
                     'Need at least two distinct 3D points to build a curve.');
             end
-            
-            p = min(max(1, round(opt.Degree)), size(P3u,1) - 1);
+
+            p = min(max(1, round(opt.Degree)), size(P3u,1)-1);
             C3 = geom.NURBSCurve.globalInterp(P3u, p, opt.ParameterMethod);
-            
+
             data = struct();
             data.points = P3u;
             data.stations = stations;
@@ -1704,53 +625,39 @@ classdef Loft
             data.infoXZ = infoXZ;
             data.boundingBox = [min(P3u,[],1); max(P3u,[],1)];
         end
-        
-        function idx = axisIndex(axisName)
-            switch lower(axisName)
-                case 'x'
-                    idx = 1;
-                case 'y'
-                    idx = 2;
-                case 'z'
-                    idx = 3;
-                otherwise
-                    error('combinePlanarGuidesTo3D:Axis', 'Unknown axis "%s".', axisName);
-            end
-        end
-        
+
         function checkPlanarity(C, planeTag, stationAxis, tol)
-            % Warn only; do not hard-fail. The helper still works for approximately
-            % planar guides.
             pts = C.evaluate(linspace(C.domain(1), C.domain(2), 101));
             planeTag = lower(string(planeTag));
             stationAxis = lower(string(stationAxis));
-            
+
             switch planeTag
                 case "xy"
                     off = max(abs(pts(:,3) - mean(pts(:,3))));
                     if off > tol
-                        warning('combinePlanarGuidesTo3D:PlanarityXY', ...
+                        warning('Loft:combinePlanarGuidesTo3D:PlanarityXY', ...
                             'Cxy is not perfectly planar in XY: max |z-zmean| = %.3e.', off);
                     end
                     if stationAxis == "z"
-                        warning('combinePlanarGuidesTo3D:AxisChoice', ...
+                        warning('Loft:combinePlanarGuidesTo3D:AxisChoice', ...
                             'Using Axis=''z'' with an XY guide is usually not meaningful.');
                     end
                 case "xz"
                     off = max(abs(pts(:,2) - mean(pts(:,2))));
                     if off > tol
-                        warning('combinePlanarGuidesTo3D:PlanarityXZ', ...
+                        warning('Loft:combinePlanarGuidesTo3D:PlanarityXZ', ...
                             'Cxz is not perfectly planar in XZ: max |y-ymean| = %.3e.', off);
                     end
                     if stationAxis == "y"
-                        warning('combinePlanarGuidesTo3D:AxisChoice', ...
+                        warning('Loft:combinePlanarGuidesTo3D:AxisChoice', ...
                             'Using Axis=''y'' with an XZ guide is usually not meaningful.');
                     end
                 otherwise
-                    error('combinePlanarGuidesTo3D:PlaneTag', 'Unknown plane tag "%s".', planeTag);
+                    error('Loft:combinePlanarGuidesTo3D', ...
+                        'Unknown plane tag "%s".', planeTag);
             end
         end
-        
+
         function range = estimateOverlapRange(C1, C2, axisName)
             pts1 = C1.evaluate(linspace(C1.domain(1), C1.domain(2), 201));
             pts2 = C2.evaluate(linspace(C2.domain(1), C2.domain(2), 201));
@@ -1759,23 +666,44 @@ classdef Loft
             r2 = [min(pts2(:,idx)), max(pts2(:,idx))];
             range = [max(r1(1), r2(1)), min(r1(2), r2(2))];
             if range(2) < range(1)
-                error('combinePlanarGuidesTo3D:NoOverlap', ...
+                error('Loft:combinePlanarGuidesTo3D', ...
                     'The two guide curves do not overlap in %s.', upper(axisName));
             end
         end
-        
+
         function P = mergeProjectedPoint(pxy, pxz, axisName, stationValue)
-            % Build a single 3D point whose projections match the two guides.
             switch lower(axisName)
                 case 'x'
                     P = [stationValue, pxy(2), pxz(3)];
                 case 'y'
-                    % Less common, but keeps the function generic.
                     P = [pxy(1), stationValue, pxz(3)];
                 case 'z'
                     P = [pxy(1), pxz(2), stationValue];
                 otherwise
-                    error('combinePlanarGuidesTo3D:Axis', 'Unknown axis "%s".', axisName);
+                    error('Loft:combinePlanarGuidesTo3D', ...
+                        'Unknown axis "%s".', axisName);
+            end
+        end
+
+        %% -----------------------------------------------------------------
+        % Basic shape/type checks
+        % ------------------------------------------------------------------
+        function P = ensure3DPoints(P)
+            if isempty(P)
+                P = zeros(0,3);
+                return;
+            end
+            if size(P,2) ~= 3
+                error('Loft:ensure3DPoints', ...
+                    'Points must be Nx3.');
+            end
+        end
+
+        function p = ensure3DRow(p)
+            p = p(:).';
+            if numel(p) ~= 3
+                error('Loft:ensure3DRow', ...
+                    'Point/vector must have 3 elements.');
             end
         end
     end
