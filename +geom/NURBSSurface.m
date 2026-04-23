@@ -424,6 +424,186 @@ classdef NURBSSurface < handle
             end
         end
 
+
+
+        function S2 = reverseU(obj)
+            %REVERSEU Reverse the surface parameterization in the u-direction.
+            %
+            % S2(u,v) = S(a+b-u, v), where [a,b] is the active u knot span.
+            aK = obj.U(1);
+            bK = obj.U(end);
+        
+            P2 = flip(obj.P, 1);
+            W2 = flip(obj.W, 1);
+            U2 = aK + bK - fliplr(obj.U);
+        
+            S2 = geom.NURBSSurface(P2, obj.p, obj.q, U2, obj.V, W2);
+        
+            % Preserve trim metadata by reflecting UV trim loops about the active
+            % u-domain, not the raw knot span.
+            ua = obj.domainU(1);
+            ub = obj.domainU(2);
+        
+            loopsOut = cell(size(obj.trimOuterLoops));
+            for k = 1:numel(obj.trimOuterLoops)
+                loopIn = obj.trimOuterLoops{k};
+                if isa(loopIn, 'geom.NURBSCurve')
+                    P = loopIn.P;
+                    P(:,1) = ua + ub - P(:,1);
+                    loopsOut{k} = geom.NURBSCurve(P, loopIn.p, loopIn.U, loopIn.W);
+                elseif isnumeric(loopIn)
+                    loopTmp = loopIn;
+                    loopTmp(:,1) = ua + ub - loopTmp(:,1);
+                    loopsOut{k} = loopTmp;
+                else
+                    error('NURBSSurface:reverseU', ...
+                        'Unsupported trim loop type: %s', class(loopIn));
+                end
+            end
+            S2.trimOuterLoops = loopsOut;
+        
+            loopsOut = cell(size(obj.trimInnerLoops));
+            for k = 1:numel(obj.trimInnerLoops)
+                loopIn = obj.trimInnerLoops{k};
+                if isa(loopIn, 'geom.NURBSCurve')
+                    P = loopIn.P;
+                    P(:,1) = ua + ub - P(:,1);
+                    loopsOut{k} = geom.NURBSCurve(P, loopIn.p, loopIn.U, loopIn.W);
+                elseif isnumeric(loopIn)
+                    loopTmp = loopIn;
+                    loopTmp(:,1) = ua + ub - loopTmp(:,1);
+                    loopsOut{k} = loopTmp;
+                else
+                    error('NURBSSurface:reverseU', ...
+                        'Unsupported trim loop type: %s', class(loopIn));
+                end
+            end
+            S2.trimInnerLoops = loopsOut;
+        
+            if isprop(obj, 'trimTolerance')
+                S2.trimTolerance = obj.trimTolerance;
+            end
+        end
+        
+        function S2 = reverseV(obj)
+            %REVERSEV Reverse the surface parameterization in the v-direction.
+            %
+            % S2(u,v) = S(u, c+d-v), where [c,d] is the active v knot span.
+            cK = obj.V(1);
+            dK = obj.V(end);
+        
+            P2 = flip(obj.P, 2);
+            W2 = flip(obj.W, 2);
+            V2 = cK + dK - fliplr(obj.V);
+        
+            S2 = geom.NURBSSurface(P2, obj.p, obj.q, obj.U, V2, W2);
+        
+            % Preserve trim metadata by reflecting UV trim loops about the active
+            % v-domain, not the raw knot span.
+            va = obj.domainV(1);
+            vb = obj.domainV(2);
+        
+            loopsOut = cell(size(obj.trimOuterLoops));
+            for k = 1:numel(obj.trimOuterLoops)
+                loopIn = obj.trimOuterLoops{k};
+                if isa(loopIn, 'geom.NURBSCurve')
+                    P = loopIn.P;
+                    P(:,2) = va + vb - P(:,2);
+                    loopsOut{k} = geom.NURBSCurve(P, loopIn.p, loopIn.U, loopIn.W);
+                elseif isnumeric(loopIn)
+                    loopTmp = loopIn;
+                    loopTmp(:,2) = va + vb - loopTmp(:,2);
+                    loopsOut{k} = loopTmp;
+                else
+                    error('NURBSSurface:reverseV', ...
+                        'Unsupported trim loop type: %s', class(loopIn));
+                end
+            end
+            S2.trimOuterLoops = loopsOut;
+        
+            loopsOut = cell(size(obj.trimInnerLoops));
+            for k = 1:numel(obj.trimInnerLoops)
+                loopIn = obj.trimInnerLoops{k};
+                if isa(loopIn, 'geom.NURBSCurve')
+                    P = loopIn.P;
+                    P(:,2) = va + vb - P(:,2);
+                    loopsOut{k} = geom.NURBSCurve(P, loopIn.p, loopIn.U, loopIn.W);
+                elseif isnumeric(loopIn)
+                    loopTmp = loopIn;
+                    loopTmp(:,2) = va + vb - loopTmp(:,2);
+                    loopsOut{k} = loopTmp;
+                else
+                    error('NURBSSurface:reverseV', ...
+                        'Unsupported trim loop type: %s', class(loopIn));
+                end
+            end
+            S2.trimInnerLoops = loopsOut;
+        
+            if isprop(obj, 'trimTolerance')
+                S2.trimTolerance = obj.trimTolerance;
+            end
+        end
+        
+        function [S2, maxErr] = reduceU(obj, numTimes, tol, nSample)
+            %REDUCEU Alias for reduceDegreeU for API symmetry with elevateU.
+            if nargin < 2 || isempty(numTimes), numTimes = 1; end
+            if nargin < 3 || isempty(tol),      tol      = inf; end
+            if nargin < 4 || isempty(nSample),  nSample  = 200; end
+            [S2, maxErr] = obj.reduceDegreeU(numTimes, tol, nSample);
+        end
+        
+        function [S2, maxErr] = reduceV(obj, numTimes, tol, nSample)
+            %REDUCEV Alias for reduceDegreeV for API symmetry with elevateV.
+            if nargin < 2 || isempty(numTimes), numTimes = 1; end
+            if nargin < 3 || isempty(tol),      tol      = inf; end
+            if nargin < 4 || isempty(nSample),  nSample  = 200; end
+            [S2, maxErr] = obj.reduceDegreeV(numTimes, tol, nSample);
+        end
+
+        
+        function loopsOut = mapTrimLoopsReverseU(loopsIn, ua, ub)
+            loopsOut = cell(size(loopsIn));
+            for k = 1:numel(loopsIn)
+                loopsOut{k} = geom.NURBSSurface.mapSingleTrimLoopReverseU(loopsIn{k}, ua, ub);
+            end
+        end
+        
+        function loopsOut = mapTrimLoopsReverseV(loopsIn, va, vb)
+            loopsOut = cell(size(loopsIn));
+            for k = 1:numel(loopsIn)
+                loopsOut{k} = geom.NURBSSurface.mapSingleTrimLoopReverseV(loopsIn{k}, va, vb);
+            end
+        end
+        
+        function loopOut = mapSingleTrimLoopReverseU(loopIn, ua, ub)
+            if isa(loopIn, 'geom.NURBSCurve')
+                P = loopIn.P;
+                P(:,1) = ua + ub - P(:,1);
+                loopOut = geom.NURBSCurve(P, loopIn.p, loopIn.U, loopIn.W);
+            elseif isnumeric(loopIn)
+                loopOut = loopIn;
+                loopOut(:,1) = ua + ub - loopOut(:,1);
+            else
+                error('NURBSSurface:reverseU', ...
+                    'Unsupported trim loop type: %s', class(loopIn));
+            end
+        end
+        
+        function loopOut = mapSingleTrimLoopReverseV(loopIn, va, vb)
+            if isa(loopIn, 'geom.NURBSCurve')
+                P = loopIn.P;
+                P(:,2) = va + vb - P(:,2);
+                loopOut = geom.NURBSCurve(P, loopIn.p, loopIn.U, loopIn.W);
+            elseif isnumeric(loopIn)
+                loopOut = loopIn;
+                loopOut(:,2) = va + vb - loopOut(:,2);
+            else
+                error('NURBSSurface:reverseV', ...
+                    'Unsupported trim loop type: %s', class(loopIn));
+            end
+        end
+
+
         function [Su, Sv] = partialDerivatives(obj, u, v)
             SKL = obj.derivatives(u, v, 1);
             Su = SKL{2,1};
