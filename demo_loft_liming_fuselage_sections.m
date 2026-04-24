@@ -22,6 +22,9 @@ fprintf('geom package found at: %s\n', script_dir);
 
 [MaxB,~]=geom.Loft.combinePlanarGuidesTo3D(MaxBTop,MaxBSide)
 [UprShldr,~]=geom.Loft.combinePlanarGuidesTo3D(UprShldrTop,UprShldrSide)
+[TangencyGuide,~]=geom.Loft.combinePlanarGuidesTo3D(MaxBTop,Upr)
+
+
 sta=0
 [~,temp1]=geom.Loft.sampleCurveAtStation(Upr,sta)
 [~,temp2]=geom.Loft.sampleCurveAtStation(MaxBSide,sta)
@@ -107,13 +110,24 @@ staS=[temp4(1) temp5(2) temp4(3)]
 [frame100,~]=geom.Loft.limingConic(staP0,staP1,staT,staS)
 
 
-S=geom.NURBSSurface.loft({frame0 frame20 frame40 frame60 frame80 frame100},1)
-Sgordon=geom.NURBSSurface.gordon({frame0 frame20 frame40 frame60 frame80 frame100},{Upr, UprShldr, MaxB},2,3)
+S=geom.NURBSSurface.loft({frame0 frame20 frame40 frame60 frame80 frame100},3)
+%Sgordon=geom.NURBSSurface.gordon({frame0 frame20 frame40 frame60 frame80 frame100},{Upr, UprShldr, MaxB},2,3)
+Sconic = geom.ConicSurface( ...
+    'UpperGuide', Upr, ...
+    'LowerGuide', MaxB, ...
+    'TangencyGuide', TangencyGuide, ...
+    'ShoulderGuide', UprShldr, ...
+    'SweepOrigin', [0 0 0], ...
+    'SweepVector', [1 0 0], ...
+    'StationRange', [0 100], ...
+    'EnableSectionCache', true);
 
 
+M = Sconic.isoMesh(101, 41);
+
+%[Lwr,~]=geom.Loft.limingConic([0 0 30], [100 0 8],[25 0 8], [25 0 15])
 
 
-[Lwr,~]=geom.Loft.limingConic([0 0 30], [100 0 8],[25 0 8], [25 0 15])
 
 % -------------------------------------------------------------------------
 % Plot 3D construction
@@ -123,7 +137,6 @@ figure('Name','Fuselage curves')
 frame0.plot()
 hold on
 Upr.plot()
-Lwr.plot()
 MaxB.plot()
 UprShldr.plot()
 frame20.plot()
@@ -132,6 +145,13 @@ frame60.plot()
 frame80.plot()
 frame100.plot()
 S.plot()
+Sconic_nurbs.plot()
+
+hSurf = surf(M.X, M.Y, M.Z, ...
+    'FaceAlpha', 0.75, ...
+    'EdgeColor', [0.25 0.25 0.25], ...
+    'FaceColor', [0.60 0.78 0.96]);
+
 %Sgordon.plot()
 ax = gca;
 ax.Clipping = 'off';

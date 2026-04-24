@@ -21,36 +21,32 @@ classdef NURBSSurface < handle
 %   - trimmed-surface support in UV parameter space
 %   - network compatibility helpers
 
+    properties (Access = private)
+        Pw_   % [n+1 x m+1 x 4] homogeneous control net [wx wy wz w]
+        U_    % [1 x ...] knot vector in u
+        V_    % [1 x ...] knot vector in v
+        p_    % degree in u
+        q_    % degree in v
+    end
+    
     properties
+        trimOuterLoops = {}
+        trimInnerLoops = {}
+        trimTolerance = 1e-8
+    end
+
+    properties (Dependent)
         P
         W
         U
         V
         p
         q
-
-        % Trim support:
-        % trimOuterLoops / trimInnerLoops are cell arrays of loops.
-        % Each loop is one of:
-        %   - Nx2 numeric UV polyline (closed or open, auto-closed)
-        %   - geom.NURBSCurve living in UV plane (z ignored)
-        %
-        % Semantics:
-        %   - If trimOuterLoops is empty, the full param domain is active.
-        %   - If trimOuterLoops is nonempty, a point must lie inside at least
-        %     one outer loop to be kept.
-        %   - If trimInnerLoops is nonempty, a point inside any inner loop
-        %     is excluded.
-        trimOuterLoops = {}
-        trimInnerLoops = {}
-        trimTolerance = 1e-10
-    end
-
-    properties (Dependent)
         n
         m
         domainU
         domainV
+        Pw
     end
 
     methods
@@ -123,54 +119,150 @@ classdef NURBSSurface < handle
                 error('NURBSSurface:Constructor', 'V must be nondecreasing.');
             end
 
-            obj.P = P;
-            obj.W = W;
-            obj.U = U;
-            obj.V = V;
-            obj.p = p;
-            obj.q = q;
-
+            obj.Pw_ = cat(3, ...
+                P(:,:,1).*W, ...
+                P(:,:,2).*W, ...
+                P(:,:,3).*W, ...
+                W);
+            obj.U_ = U(:).';
+            obj.V_ = V(:).';
+            obj.p_ = p;
+            obj.q_ = q;
             obj.validate();
         end
-
+        
+        function v = get.P(obj)
+            w = obj.Pw_(:,:,4);
+            v = obj.Pw_(:,:,1:3) ./ w;
+        end
+        
+        function set.P(obj, P)
+            if ndims(P) ~= 3 || size(P,3) ~= 3
+                error('NURBSSurface:set.P', 'P must be [n+1 x m+1 x 3].');
+            end
+            if size(P,1) ~= size(obj.Pw_,1) || size(P,2) ~= size(obj.Pw_,2)
+                error('NURBSSurface:set.P', 'P size must match existing control net.');
+            end
+            w = obj.Pw_(:,:,4);
+            obj.Pw_ = cat(3, ...
+                P(:,:,1).*w, ...
+                P(:,:,2).*w, ...
+                P(:,:,3).*w, ...
+                w);
+        end
+        
+        function v = get.W(obj)
+            v = obj.Pw_(:,:,4);
+        end
+        
+        function set.W(obj, W)
+            if ~isequal(size(W), [size(obj.Pw_,1), size(obj.Pw_,2)])
+                error('NURBSSurface:set.W', 'W must match control-net size.');
+            end
+            if any(W(:) <= 0)
+                error('NURBSSurface:set.W', 'Weights must be strictly positive.');
+            end
+            P = obj.P;
+            obj.Pw_ = cat(3, ...
+                P(:,:,1).*W, ...
+                P(:,:,2).*W, ...
+                P(:,:,3).*W, ...
+                W);
+        end
+        
+        function v = get.U(obj)
+            v = obj.U_;
+        end
+        
+        function set.U(obj, U)
+            U = U(:).';
+            if any(diff(U) < 0)
+                error('NURBSSurface:set.U', 'U must be nondecreasing.');
+            end
+            obj.U_ = U;
+        end
+        
+        function v = get.V(obj)
+            v = obj.V_;
+        end
+        
+        function set.V(obj, V)
+            V = V(:).';
+            if any(diff(V) < 0)
+                error('NURBSSurface:set.V', 'V must be nondecreasing.');
+            end
+            obj.V_ = V;
+        end
+        
+        function v = get.p(obj)
+            v = obj.p_;
+        end
+        
+        function set.p(obj, p)
+            if ~isscalar(p) || p < 0 || p ~= floor(p)
+                error('NURBSSurface:set.p', 'p must be a nonnegative integer.');
+            end
+            obj.p_ = p;
+        end
+        
+        function v = get.q(obj)
+            v = obj.q_;
+        end
+        
+        function set.q(obj, q)
+            if ~isscalar(q) || q < 0 || q ~= floor(q)
+                error('NURBSSurface:set.q', 'q must be a nonnegative integer.');
+            end
+            obj.q_ = q;
+        end
+        
         function v = get.n(obj)
-            v = size(obj.P, 1) - 1;
+            v = size(obj.Pw_,1) - 1;
         end
-
+        
         function v = get.m(obj)
-            v = size(obj.P, 2) - 1;
+            v = size(obj.Pw_,2) - 1;
         end
-
+        
         function v = get.domainU(obj)
-            v = [obj.U(obj.p+1), obj.U(end-obj.p)];
+            v = [obj.U_(obj.p_+1), obj.U_(end-obj.p_)];
         end
-
+        
         function v = get.domainV(obj)
-            v = [obj.V(obj.q+1), obj.V(end-obj.q)];
+            v = [obj.V_(obj.q_+1), obj.V_(end-obj.q_)];
         end
+        
+        function v = get.Pw(obj)
+            v = obj.Pw_;
+        end
+        
+        
+        
     end
-
     methods
-        function tf = validate(obj)
-            if size(obj.P, 1) ~= size(obj.W, 1) || size(obj.P, 2) ~= size(obj.W, 2)
-                error('NURBSSurface:Validate', 'P and W sizes are inconsistent.');
+
+
+
+        function ok = validate(obj)
+            if ndims(obj.Pw_) ~= 3 || size(obj.Pw_,3) ~= 4
+                error('NURBSSurface:Validate', 'Pw_ must be [n+1 x m+1 x 4].');
             end
-            if numel(obj.U) ~= obj.n + obj.p + 2
-                error('NURBSSurface:Validate', 'U length is inconsistent with n and p.');
+            if numel(obj.U_) ~= obj.n + obj.p_ + 2
+                error('NURBSSurface:Validate', 'U length inconsistent with n and p.');
             end
-            if numel(obj.V) ~= obj.m + obj.q + 2
-                error('NURBSSurface:Validate', 'V length is inconsistent with m and q.');
+            if numel(obj.V_) ~= obj.m + obj.q_ + 2
+                error('NURBSSurface:Validate', 'V length inconsistent with m and q.');
             end
-            if any(diff(obj.U) < 0)
+            if any(diff(obj.U_) < 0)
                 error('NURBSSurface:Validate', 'U must be nondecreasing.');
             end
-            if any(diff(obj.V) < 0)
+            if any(diff(obj.V_) < 0)
                 error('NURBSSurface:Validate', 'V must be nondecreasing.');
             end
-            if any(obj.W(:) <= 0)
+            if any(obj.Pw_(:,:,4) <= 0, 'all')
                 error('NURBSSurface:Validate', 'Weights must be strictly positive.');
             end
-            tf = true;
+            ok = true;
         end
 
         function C = evaluate(obj, u, v)

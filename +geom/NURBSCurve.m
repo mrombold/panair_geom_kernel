@@ -19,18 +19,21 @@ classdef NURBSCurve < handle
 %   - Homogeneous control points are formed internally as Pw = [w*x w*y w*z w].
 %   - Parameter domain is [U(p+1), U(end-p)] for clamped/open curves.
 
-    properties
-        P   % [n+1 x 3] Cartesian control points
-        W   % [n+1 x 1] positive weights
-        U   % [1 x m+1] nondecreasing knot vector
-        p   % degree
+    properties (Access = private)
+        Pw_
+        U_
+        p_
     end
 
     properties (Dependent)
-        n       % last control-point index
-        m       % last knot index
-        domain  % active parameter domain [U(p+1), U(end-p)]
-        Pw      % homogeneous control points [wx wy wz w]
+        P
+        W
+        U
+        p
+        n
+        m
+        domain
+        Pw
     end
 
     methods
@@ -80,46 +83,102 @@ classdef NURBSCurve < handle
                 error('NURBSCurve:Constructor', 'Knot vector must be nondecreasing.');
             end
 
-            obj.P = P;
-            obj.W = W;
-            obj.U = U;
-            obj.p = p;
-
+            obj.Pw_ = [P .* W, W];
+            obj.U_ = U;
+            obj.p_ = p;
             obj.validate();
         end
 
+        function v = get.P(obj)
+            w = obj.Pw_(:,4);
+            v = obj.Pw_(:,1:3) ./ w;
+        end
+        
+        function set.P(obj, P)
+            [npts, dim] = size(P);
+            if dim == 2
+                P = [P, zeros(npts,1)];
+            elseif dim ~= 3
+                error('NURBSCurve:set.P', 'P must be Nx2 or Nx3.');
+            end
+            if npts ~= size(obj.Pw_,1)
+                error('NURBSCurve:set.P', 'P size must match existing control-point count.');
+            end
+            w = obj.Pw_(:,4);
+            obj.Pw_ = [P .* w, w];
+        end
+        
+        function v = get.W(obj)
+            v = obj.Pw_(:,4);
+        end
+        
+        function set.W(obj, W)
+            W = W(:);
+            if numel(W) ~= size(obj.Pw_,1)
+                error('NURBSCurve:set.W', 'W must match the number of control points.');
+            end
+            if any(W <= 0)
+                error('NURBSCurve:set.W', 'Weights must be strictly positive.');
+            end
+            P = obj.P;
+            obj.Pw_ = [P .* W, W];
+        end
+        
+        function v = get.U(obj)
+            v = obj.U_;
+        end
+        
+        function set.U(obj, U)
+            U = U(:).';
+            if any(diff(U) < 0)
+                error('NURBSCurve:set.U', 'Knot vector must be nondecreasing.');
+            end
+            obj.U_ = U;
+        end
+        
+        function v = get.p(obj)
+            v = obj.p_;
+        end
+        
+        function set.p(obj, p)
+            if ~isscalar(p) || p < 0 || p ~= floor(p)
+                error('NURBSCurve:set.p', 'Degree p must be a nonnegative integer.');
+            end
+            obj.p_ = p;
+        end
+        
         function v = get.n(obj)
-            v = size(obj.P,1) - 1;
+            v = size(obj.Pw_,1) - 1;
         end
-
+        
         function v = get.m(obj)
-            v = numel(obj.U) - 1;
+            v = numel(obj.U_) - 1;
         end
-
+        
         function v = get.domain(obj)
-            v = [obj.U(obj.p+1), obj.U(end-obj.p)];
+            v = [obj.U_(obj.p_+1), obj.U_(end-obj.p_)];
+        end
+        
+        function v = get.Pw(obj)
+            v = obj.Pw_;
         end
 
-        function v = get.Pw(obj)
-            v = [obj.P .* obj.W, obj.W];
-        end
     end
 
     methods
         function tf = validate(obj)
-            if size(obj.P,1) ~= numel(obj.W)
-                error('NURBSCurve:Validate', 'P and W sizes are inconsistent.');
+            if size(obj.Pw_,2) ~= 4
+                error('NURBSCurve:Validate', 'Pw_ must be [n+1 x 4].');
             end
-            if numel(obj.U) ~= obj.n + obj.p + 2
+            if numel(obj.U_) ~= obj.n + obj.p_ + 2
                 error('NURBSCurve:Validate', 'Knot-vector length is inconsistent with n and p.');
             end
-            if any(diff(obj.U) < 0)
+            if any(diff(obj.U_) < 0)
                 error('NURBSCurve:Validate', 'Knot vector must be nondecreasing.');
             end
-            if any(obj.W <= 0)
+            if any(obj.Pw_(:,4) <= 0)
                 error('NURBSCurve:Validate', 'Weights must be strictly positive.');
             end
-            tf = true;
         end
 
         function tf = isClamped(obj)
