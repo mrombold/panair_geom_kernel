@@ -77,17 +77,55 @@ S2=geom.NURBSSurface.loft({Upr, UprShldrN, MaxBn, LwrShldrN, Lwr},2)
 
 figure('Name','Fuselage curves')
 hold on
-Upr.plot()
-MaxBp.plot()
-MaxBn.plot()
-Lwr.plot()
-UprShldrP.plot()
-UprShldrN.plot()
-LwrShldrP.plot()
-LwrShldrN.plot()
-S1.plot()
-S2.plot()
+%Upr.plot()
+%MaxBp.plot()
+%MaxBn.plot()
+%Lwr.plot()
+%UprShldrP.plot()
+%UprShldrN.plot()
+%LwrShldrP.plot()
+%LwrShldrN.plot()
+S1.plot(60,30,'ShowCP','true');
+S2.plot(60,30,'ShowCP','true');
 ax = gca;
 ax.Clipping = 'off';
+
+
+
+S1 = S1.refine([0.02 0.05 0.10 0.15 0.25 .75 .85 .9 .95 .98], [0.02 0.05 0.10 0.15 0.25 .75 .85 .9 .95 .98]);   
+
+S2 = S2.refine([0.02 0.05 0.10 0.15 0.25 .75 .85 .9 .95 .98], [0.02 0.05 0.10 0.15 0.25 .75 .85 .9 .95 .98]);   
+figure
+S1.plot(60,30,'ShowCP','true');
+S2.plot(60,30,'ShowCP','true');
+ax = gca;
+ax.Clipping = 'off';
+
+
+PKL = S1.derivativeControlPoints(2);
+
+Su_h = S1.derivativeSurfaceHomogeneous(1,0);
+Sv_h = S1.derivativeSurfaceHomogeneous(0,1);
+
+
+u = 0.37;
+v = 0.42;
+d = 2;
+
+SKL1 = S1.derivatives(u,v,d);
+SKL2 = S1.derivativesViaControlPoints(u,v,d);
+
+fprintf('\nA3.8 derivative cross-check:\n');
+for k = 0:d
+    for l = 0:(d-k)
+        err = norm(SKL1{k+1,l+1} - SKL2{k+1,l+1});
+        fprintf('  d(%d,%d) err = %.3e\n', k, l, err);
+    end
+end
+
+disp(size(PKL{2,1}))   % homogeneous Su control net
+disp(size(PKL{1,2}))   % homogeneous Sv control net
+
+
 
 fprintf('\nDone.\n');

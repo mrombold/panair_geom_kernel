@@ -182,6 +182,19 @@ catch ME
     fprintf('  Refinement section failed: %s\n', ME.message);
 end
 
+ug = linspace(S.domainU(1), S.domainU(2), 17);
+vg = linspace(S.domainV(1), S.domainV(2), 19);
+maxRefErr = 0;
+
+for ii = 1:numel(ug)
+    for jj = 1:numel(vg)
+        maxRefErr = max(maxRefErr, ...
+            norm(S.evaluate(ug(ii),vg(jj)) - Sref.evaluate(ug(ii),vg(jj))));
+    end
+end
+
+fprintf('  A5.3 refinement preservation error = %.3e\n', maxRefErr);
+
 %% ======================================================================
 %  6. SPLITU / SPLITV
 %% ======================================================================

@@ -163,164 +163,6 @@ classdef NURBSCurve < handle
             v = obj.Pw_;
         end
 
-    end
-
-    methods
-        function tf = validate(obj)
-            if size(obj.Pw_,2) ~= 4
-                error('NURBSCurve:Validate', 'Pw_ must be [n+1 x 4].');
-            end
-            if numel(obj.U_) ~= obj.n + obj.p_ + 2
-                error('NURBSCurve:Validate', 'Knot-vector length is inconsistent with n and p.');
-            end
-            if any(diff(obj.U_) < 0)
-                error('NURBSCurve:Validate', 'Knot vector must be nondecreasing.');
-            end
-            if any(obj.Pw_(:,4) <= 0)
-                error('NURBSCurve:Validate', 'Weights must be strictly positive.');
-            end
-        end
-
-        function tf = isClamped(obj)
-            tf = all(abs(obj.U(1:obj.p+1) - obj.U(1)) < 1e-12) && ...
-                 all(abs(obj.U(end-obj.p:end) - obj.U(end)) < 1e-12);
-        end
-
-        function s = knotMultiplicity(obj, u, tol)
-            if nargin < 3 || isempty(tol), tol = 1e-12; end
-            s = sum(abs(obj.U - u) < tol);
-        end
-
-        function C = evaluate(obj, u)
-            u = u(:).';
-            C = zeros(numel(u), 3);
-
-            for k = 1:numel(u)
-                uk = obj.clamp(u(k));
-                span = geom.BasisFunctions.FindSpan(obj.n, obj.p, uk, obj.U);
-                N = geom.BasisFunctions.BasisFuns(span, uk, obj.p, obj.U);
-
-                Cw = zeros(1,4);
-                for j = 0:obj.p
-                    idx = span - obj.p + j;
-                    Cw = Cw + N(j+1) * obj.Pw(idx,:);
-                end
-                C(k,:) = Cw(1:3) / Cw(4);
-            end
-        end
-
-        function CK = derivatives(obj, u, d)
-        % Exact rational derivatives C^(0)...C^(d) at scalar u.
-            if nargin < 3 || isempty(d), d = 1; end
-            if ~isscalar(u)
-                error('NURBSCurve:derivatives', 'u must be scalar.');
-            end
-
-            u = obj.clamp(u);
-            d = min(max(0, floor(d)), obj.p);
-
-            span  = geom.BasisFunctions.FindSpan(obj.n, obj.p, u, obj.U);
-            Nders = geom.BasisFunctions.DersBasisFuns(span, u, obj.p, d, obj.U);
-
-            Aders = zeros(d+1, 3);
-            wders = zeros(d+1, 1);
-
-            for j = 0:obj.p
-                idx = span - obj.p + j;
-                wj = obj.W(idx);
-                Pj = obj.P(idx,:);
-                for kk = 0:d
-                    Aders(kk+1,:) = Aders(kk+1,:) + Nders(kk+1,j+1) * wj * Pj;
-                    wders(kk+1)   = wders(kk+1)   + Nders(kk+1,j+1) * wj;
-                end
-            end
-
-            CK = zeros(d+1, 3);
-            CK(1,:) = Aders(1,:) / wders(1);
-            for kk = 1:d
-                v = Aders(kk+1,:);
-                for i = 1:kk
-                    v = v - nchoosek(kk,i) * wders(i+1) * CK(kk-i+1,:);
-                end
-                CK(kk+1,:) = v / wders(1);
-            end
-        end
-
-        function D = derivative(obj, u, k)
-            if nargin < 3 || isempty(k), k = 1; end
-            u = u(:).';
-            D = zeros(numel(u), 3);
-            for i = 1:numel(u)
-                CK = obj.derivatives(u(i), k);
-                D(i,:) = CK(k+1,:);
-            end
-        end
-
-        function T = tangent(obj, u)
-            D = obj.derivative(u, 1);
-            nrm = sqrt(sum(D.^2,2));
-            nrm(nrm < eps) = 1;
-            T = D ./ nrm;
-        end
-
-        function [T, Nvec, B] = frenetFrame(obj, u)
-            D1 = obj.derivative(u, 1);
-            D2 = obj.derivative(u, 2);
-            T = D1 ./ max(vecnorm(D1,2,2), eps);
-            Nvec = D2 - sum(D2 .* T, 2) .* T;
-            Nvec = Nvec ./ max(vecnorm(Nvec,2,2), eps);
-            B = cross(T, Nvec, 2);
-        end
-
-        function kappa = curvature(obj, u)
-            D1 = obj.derivative(u,1);
-            D2 = obj.derivative(u,2);
-            num = vecnorm(cross(D1,D2,2),2,2);
-            den = max(vecnorm(D1,2,2).^3, eps);
-            kappa = num ./ den;
-        end
-
-        function L = arcLength(obj, u0, u1, nGauss)
-            if nargin < 4 || isempty(nGauss), nGauss = 5; end
-            if nargin < 3 || isempty(u1), u1 = obj.domain(2); end
-            if nargin < 2 || isempty(u0), u0 = obj.domain(1); end
-
-            u0 = obj.clamp(u0);
-            u1 = obj.clamp(u1);
-            if u1 < u0
-                tmp = u0; u0 = u1; u1 = tmp;
-            end
-
-            [xi, wi] = geom.NURBSCurve.gaussLegendre(nGauss);
-            K = unique(obj.U);
-            K = K(K >= u0 & K <= u1);
-            if isempty(K) || K(1) > u0, K = [u0, K]; end
-            if K(end) < u1, K = [K, u1]; end
-
-            L = 0;
-            for s = 1:numel(K)-1
-                a = K(s); b = K(s+1);
-                if b <= a, continue; end
-                uq = 0.5*(b-a)*xi + 0.5*(a+b);
-                dC = obj.derivative(uq, 1);
-                L = L + 0.5*(b-a) * dot(wi, vecnorm(dC,2,2));
-            end
-        end
-
-        function u = arcLengthParam(obj, nPts)
-            us = linspace(obj.domain(1), obj.domain(2), max(200, 10*nPts));
-            pts = obj.evaluate(us);
-            s = [0; cumsum(vecnorm(diff(pts,1,1),2,2))];
-            if s(end) < eps
-                u = linspace(obj.domain(1), obj.domain(2), nPts);
-                return;
-            end
-            s = s / s(end);
-            u = interp1(s, us(:), linspace(0,1,nPts)', 'pchip').';
-        end
-    end
-
-    methods
         function C2 = insertKnot(obj, u, r)
         % Exact knot insertion by repeated single insertion.
             if nargin < 3 || isempty(r), r = 1; end
@@ -335,12 +177,27 @@ classdef NURBSCurve < handle
         end
 
         function C2 = refine(obj, X)
-        % Exact curve knot refinement by repeated single-knot insertion.
+        %REFINE Exact curve knot-vector refinement.
+        % Implements The NURBS Book Algorithm A5.4 in homogeneous coordinates.
+        
             X = sort(X(:).');
-            C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
-            for ii = 1:numel(X)
-                C2 = C2.insertKnotOnce(X(ii));
+        
+            if isempty(X)
+                C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
+                return;
             end
+        
+            [Qw, Ubar] = geom.NURBSCurve.refineKnotVectCurveHomogeneous( ...
+                obj.n, obj.p, obj.U, obj.Pw, X);
+        
+            W2 = Qw(:,4);
+            if any(W2 <= 0)
+                error('NURBSCurve:refine', ...
+                    'Refinement produced nonpositive weights.');
+            end
+        
+            P2 = Qw(:,1:3) ./ W2;
+            C2 = geom.NURBSCurve(P2, obj.p, Ubar, W2);
         end
 
         function [Cleft, Cright] = split(obj, u0)
@@ -486,9 +343,7 @@ classdef NURBSCurve < handle
             pts = obj.evaluate(linspace(obj.domain(1), obj.domain(2), nPts));
             bbox = [min(pts); max(pts)].';
         end
-    end
 
-    methods
         function H = evaluateHomogeneous(obj, u)
         % Exact homogeneous 4D B-spline evaluation.
             u = u(:).';
@@ -620,9 +475,8 @@ classdef NURBSCurve < handle
 
             C2 = Ccur;
         end
-    end
 
-    methods
+
         function [u_c, pt_c, d_c] = closestPoint(obj, P, u0)
             P = P(:).';
             if nargin < 3 || isempty(u0)
@@ -679,9 +533,7 @@ classdef NURBSCurve < handle
             if nargin < 3, u0 = []; end
             [u_inv, pt_inv, err] = obj.closestPoint(P, u0);
         end
-    end
 
-    methods
         function plot(obj, nPts, varargin)
             if nargin < 2 || isempty(nPts), nPts = 200; end
 
@@ -717,9 +569,8 @@ classdef NURBSCurve < handle
             grid on;
             xlabel('X'); ylabel('Y'); zlabel('Z');
         end
-    end
 
-    methods (Static)
+
         function U = averagingKnotVector(params, p)
             params = params(:).';
             n = numel(params) - 1;
@@ -1020,9 +871,7 @@ classdef NURBSCurve < handle
             U = [0 0 0 1 1 1];
             C = geom.NURBSCurve(P, 2, U, W);
         end
-    end
 
-    methods (Static)
         function g = grevilleFromKnotVector(U, p)
             n = numel(U) - p - 2;
             g = zeros(n+1,1);
@@ -1154,6 +1003,112 @@ classdef NURBSCurve < handle
                     w = [0.236926885056189; 0.478628670499366; 0.568888888888889; 0.478628670499366; 0.236926885056189];
             end
         end
+
+        
+        function [Qw, Ubar] = refineKnotVectCurveHomogeneous(n, p, U, Pw, X)
+        %REFINEKNOTVECTCURVEHOMOGENEOUS Algorithm A5.4.
+        %
+        % Refine curve knot vector by inserting all knots in X at once.
+        % Uses homogeneous control points Pw = [wx wy wz w].
+        %
+        % Inputs use MATLAB storage, but internally the indexing follows
+        % The NURBS Book zero-based algorithm.
+        
+            X = sort(X(:).');
+            r = numel(X) - 1;
+        
+            if r < 0
+                Qw = Pw;
+                Ubar = U;
+                return;
+            end
+        
+            m = n + p + 1;
+        
+            % Validate insertion multiplicities.
+            tol = 1e-12;
+            ux = unique(X);
+            for kk = 1:numel(ux)
+                multExisting = sum(abs(U - ux(kk)) < tol);
+                multNew      = sum(abs(X - ux(kk)) < tol);
+        
+                if ux(kk) > U(p+1) + tol && ux(kk) < U(end-p) - tol
+                    if multExisting + multNew > p
+                        error('NURBSCurve:refine', ...
+                            'Cannot refine at knot %.16g: multiplicity would exceed degree.', ux(kk));
+                    end
+                end
+            end
+        
+            % Book spans are zero-based. Existing FindSpan returns one-based span.
+            a = geom.BasisFunctions.FindSpan(n, p, X(1),   U) - 1;
+            b = geom.BasisFunctions.FindSpan(n, p, X(end), U) - 1;
+            b = b + 1;
+        
+            Qw   = zeros(n + r + 2, size(Pw,2));
+            Ubar = zeros(1, m + r + 2);
+        
+            % Copy unaffected control points.
+            for j = 0:(a-p)
+                Qw(j+1,:) = Pw(j+1,:);
+            end
+        
+            for j = (b-1):n
+                Qw(j+r+2,:) = Pw(j+1,:);
+            end
+        
+            % Copy unaffected knots.
+            for j = 0:a
+                Ubar(j+1) = U(j+1);
+            end
+        
+            for j = (b+p):m
+                Ubar(j+r+2) = U(j+1);
+            end
+        
+            i = b + p - 1;
+            k = b + p + r;
+        
+            % Main A5.4 backward insertion loop.
+            for j = r:-1:0
+                Xj = X(j+1);
+        
+                while (Xj <= U(i+1)) && (i > a)
+                    Qw(k-p,:) = Pw(i-p,:);
+                    Ubar(k+1) = U(i+1);
+                    k = k - 1;
+                    i = i - 1;
+                end
+        
+                Qw(k-p,:) = Qw(k-p+1,:);
+        
+                for l = 1:p
+                    ind = k - p + l;
+        
+                    denom = Ubar(k+l+1) - U(i-p+l+1);
+                    if abs(denom) < eps
+                        alpha = 0.0;
+                    else
+                        alpha = (Ubar(k+l+1) - Xj) / denom;
+                    end
+        
+                    if abs(alpha) < eps
+                        Qw(ind,:) = Qw(ind+1,:);
+                    else
+                        Qw(ind,:) = alpha * Qw(ind,:) + ...
+                                    (1.0 - alpha) * Qw(ind+1,:);
+                    end
+                end
+        
+                Ubar(k+1) = Xj;
+                k = k - 1;
+            end
+        end
+
+
+
+
+
     end
 
     methods (Access = private)

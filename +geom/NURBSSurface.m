@@ -236,13 +236,7 @@ classdef NURBSSurface < handle
             v = obj.Pw_;
         end
         
-        
-        
-    end
-    methods
-
-
-
+      
         function ok = validate(obj)
             if ndims(obj.Pw_) ~= 3 || size(obj.Pw_,3) ~= 4
                 error('NURBSSurface:Validate', 'Pw_ must be [n+1 x m+1 x 4].');
@@ -481,40 +475,183 @@ classdef NURBSSurface < handle
                     wders(k+1,l+1) = wkl;
                 end
             end
+            SKL = geom.NURBSSurface.rationalSurfaceDerivativesFromHomogeneous( ...
+                      Aders, wders, d);
+        end
 
-            SKL = cell(d+1, d+1);
+    
+        function PKL = derivativeControlPoints(obj, d, r1, r2, s1, s2)
+            if nargin < 2 || isempty(d), d = 1; end
+            if nargin < 3 || isempty(r1), r1 = 1; end
+            if nargin < 4 || isempty(r2), r2 = obj.n + 1; end
+            if nargin < 5 || isempty(s1), s1 = 1; end
+            if nargin < 6 || isempty(s2), s2 = obj.m + 1; end
+        
+            d = floor(d);
+            du = min(d,obj.p);
+            dv = min(d,obj.q);
+        
+            r = r2-r1;
+            s = s2-s1;
+        
+            PKL = cell(d+1,d+1);
             for k = 0:d
                 for l = 0:d
-                    SKL{k+1,l+1} = zeros(1,3);
+                    PKL{k+1,l+1} = zeros(max(r-k+1,0), max(s-l+1,0), 4);
                 end
             end
-
-            w00 = wders(1,1);
-            if abs(w00) < eps
-                error('NURBSSurface:ZeroWeight', ...
-                    'Surface weight function vanished at (u,v).');
+        
+            for j = 0:s
+                Pcol = squeeze(obj.Pw(r1:r2,s1+j,:));
+                PKu = geom.NURBSSurface.curveDerivCpts1D(obj.p,obj.U,Pcol,du,r1,r2);
+        
+                for k = 0:du
+                    PKL{k+1,1}(:,j+1,:) = PKu{k+1};
+                end
             end
-
-            for k = 0:d
-                for l = 0:(d-k)
-                    vkl = Aders{k+1,l+1};
-
-                    for j = 1:l
-                        vkl = vkl - nchoosek(l,j) * wders(1,j+1) * SKL{k+1,l-j+1};
+        
+            for k = 0:du
+                dd = min(d-k,dv);
+                for i = 0:(r-k)
+                    Prow = squeeze(PKL{k+1,1}(i+1,1:s+1,:));
+                    PKv = geom.NURBSSurface.curveDerivCpts1D(obj.q,obj.V,Prow,dd,s1,s2);
+        
+                    for l = 1:dd
+                        PKL{k+1,l+1}(i+1,:,:) = PKv{l+1};
                     end
-
-                    for i = 1:k
-                        vkl = vkl - nchoosek(k,i) * wders(i+1,1) * SKL{k-i+1,l+1};
-                        for j = 1:l
-                            vkl = vkl - nchoosek(k,i) * nchoosek(l,j) * ...
-                                wders(i+1,j+1) * SKL{k-i+1,l-j+1};
-                        end
-                    end
-
-                    SKL{k+1,l+1} = vkl / w00;
                 end
             end
         end
+
+
+
+            
+            
+        function Sder = derivativeSurfaceHomogeneous(obj, ku, kv)
+        %DERIVATIVESURFACEHOMOGENEOUS Return homogeneous derivative B-spline surface.
+        %
+        % Sder.Pw    homogeneous derivative control net
+        % Sder.U     derivative u knot vector
+        % Sder.V     derivative v knot vector
+        % Sder.p     derivative u degree
+        % Sder.q     derivative v degree
+        %
+        % This is not a Cartesian NURBS surface for rational derivatives.
+        % It is the homogeneous derivative surface.
+        
+            if nargin < 2, ku = 1; end
+            if nargin < 3, kv = 0; end
+        
+            ku = floor(ku);
+            kv = floor(kv);
+        
+            if ku < 0 || kv < 0 || ku > obj.p || kv > obj.q
+                error('NURBSSurface:derivativeSurfaceHomogeneous', ...
+                    'Requested derivative order exceeds surface degree.');
+            end
+        
+            d = ku + kv;
+            PKL = obj.derivativeControlPoints(d);
+        
+            Sder = struct();
+            Sder.Pw = PKL{ku+1,kv+1};
+            Sder.p  = obj.p - ku;
+            Sder.q  = obj.q - kv;
+            Sder.U  = obj.U(ku+1:end-ku);
+            Sder.V  = obj.V(kv+1:end-kv);
+        end
+
+
+
+
+
+
+        function SKL = derivativesViaControlPoints(obj,u,v,d)
+            if nargin < 4 || isempty(d), d = 1; end
+        
+            u = obj.clampU(u);
+            v = obj.clampV(v);
+            d = floor(d);
+        
+            du = min(d,obj.p);
+            dv = min(d,obj.q);
+        
+            uspan = geom.BasisFunctions.FindSpan(obj.n,obj.p,u,obj.U);
+            vspan = geom.BasisFunctions.FindSpan(obj.m,obj.q,v,obj.V);
+        
+            Nu = geom.NURBSSurface.allBasisFuns(uspan,u,obj.p,obj.U);
+            Nv = geom.NURBSSurface.allBasisFuns(vspan,v,obj.q,obj.V);
+        
+            r1 = uspan - obj.p;
+            r2 = uspan;
+            s1 = vspan - obj.q;
+            s2 = vspan;
+        
+            PKL = obj.derivativeControlPoints(d,r1,r2,s1,s2);
+        
+            Aders = cell(d+1,d+1);
+            wders = zeros(d+1,d+1);
+        
+            for k = 0:d
+                for l = 0:d
+                    Aders{k+1,l+1} = zeros(1,3);
+                end
+            end
+        
+            for k = 0:du
+                dd = min(d-k,dv);
+                for l = 0:dd
+                    temp = zeros(obj.q-l+1,4);
+        
+                    for s = 0:(obj.q-l)
+                        acc = zeros(1,4);
+                        for r = 0:(obj.p-k)
+                            acc = acc + Nu(obj.p-k+1,r+1) * ...
+                                reshape(PKL{k+1,l+1}(r+1,s+1,:),1,4);
+                        end
+                        temp(s+1,:) = acc;
+                    end
+        
+                    Sw = zeros(1,4);
+                    for s = 0:(obj.q-l)
+                        Sw = Sw + Nv(obj.q-l+1,s+1) * temp(s+1,:);
+                    end
+        
+                    Aders{k+1,l+1} = Sw(1:3);
+                    wders(k+1,l+1) = Sw(4);
+                end
+            end
+        
+            SKL = geom.NURBSSurface.rationalSurfaceDerivativesFromHomogeneous(Aders, wders, d);
+        end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -843,9 +980,9 @@ classdef NURBSSurface < handle
             if nargin < 4, v0 = []; end
             [u_inv, v_inv, pt_inv, err] = obj.closestPoint(P, u0, v0);
         end
-    end
+      
 
-    methods
+
         function [u_iso, v_iso, pts] = isoGrid(obj, nu, nv)
             u_iso = linspace(obj.domainU(1), obj.domainU(2), nu);
             v_iso = linspace(obj.domainV(1), obj.domainV(2), nv);
@@ -927,75 +1064,26 @@ classdef NURBSSurface < handle
             mesh.connectivity = conn;
         end
 
+        
         function S2 = refine(obj, Xu, Xv)
             if nargin < 2, Xu = []; end
             if nargin < 3, Xv = []; end
-
-            P2 = obj.P;
-            W2 = obj.W;
-            U2 = obj.U;
-            V2 = obj.V;
-
-            if ~isempty(Xu)
-                Xu = sort(Xu(:).');
-                p = obj.p;
-                U_orig = U2;
-
-                for j = 1:size(P2, 2)
-                    Prow = squeeze(P2(:, j, :));
-                    Wrow = W2(:, j);
-
-                    Ctmp = geom.NURBSCurve(Prow, p, U_orig, Wrow);
-                    Cref = Ctmp.refine(Xu);
-
-                    if j == 1
-                        n_new = size(Cref.P, 1);
-                        P2_new = zeros(n_new, size(P2, 2), 3);
-                        W2_new = zeros(n_new, size(P2, 2));
-                        U2 = Cref.U;
-                    end
-
-                    P2_new(:, j, :) = Cref.P;
-                    W2_new(:, j) = Cref.W;
-                end
-
-                P2 = P2_new;
-                W2 = W2_new;
+        
+            S2 = obj.copySurfaceOnly();
+        
+            Xu = sort(Xu(:).');
+            for k = 1:numel(Xu)
+                S2 = S2.insertKnotU(Xu(k), 1);
             end
-
-            if ~isempty(Xv)
-                Xv = sort(Xv(:).');
-                q = obj.q;
-                V_orig = V2;
-
-                for i = 1:size(P2, 1)
-                    Pcol = squeeze(P2(i, :, :));
-                    Wcol = W2(i, :).';
-
-                    Ctmp = geom.NURBSCurve(Pcol, q, V_orig, Wcol);
-                    Cref = Ctmp.refine(Xv);
-
-                    if i == 1
-                        m_new = size(Cref.P, 1);
-                        P2_new = zeros(size(P2, 1), m_new, 3);
-                        W2_new = zeros(size(P2, 1), m_new);
-                        V2 = Cref.U;
-                    end
-
-                    P2_new(i, :, :) = Cref.P;
-                    W2_new(i, :) = Cref.W.';
-                end
-
-                P2 = P2_new;
-                W2 = W2_new;
+        
+            Xv = sort(Xv(:).');
+            for k = 1:numel(Xv)
+                S2 = S2.insertKnotV(Xv(k), 1);
             end
-
-            S2 = geom.NURBSSurface(P2, obj.p, obj.q, U2, V2, W2);
-            S2.trimOuterLoops = obj.trimOuterLoops;
-            S2.trimInnerLoops = obj.trimInnerLoops;
-            S2.trimTolerance = obj.trimTolerance;
         end
-
+        
+        
+        
         function S2 = flipNormals(obj)
             P2 = flipud(obj.P);
             W2 = flipud(obj.W);
@@ -1431,9 +1519,9 @@ classdef NURBSSurface < handle
             S2.trimInnerLoops = obj.trimInnerLoops;
             S2.trimTolerance = obj.trimTolerance;
         end
-    end
 
-    methods
+
+
         function plot(obj, nu, nv, varargin)
             if nargin < 2, nu = 30; end
             if nargin < 3, nv = 30; end
@@ -1545,16 +1633,109 @@ classdef NURBSSurface < handle
             end
             title('Trim loops in UV space');
         end
-    end
+    
 
-    methods
         function obj2 = copySurfaceOnly(obj)
             obj2 = geom.NURBSSurface(obj.P, obj.p, obj.q, obj.U, obj.V, obj.W);
             obj2.trimOuterLoops = obj.trimOuterLoops;
             obj2.trimInnerLoops = obj.trimInnerLoops;
             obj2.trimTolerance = obj.trimTolerance;
         end
+
+        function S2 = insertKnotU(obj, u, r)
+        %INSERTKNOTU Exact surface knot insertion in u-direction.
+        % Implements The NURBS Book Algorithm A5.3 by applying homogeneous
+        % curve knot insertion to every v-column.
+        
+            if nargin < 3 || isempty(r), r = 1; end
+            if r < 0 || r ~= floor(r)
+                error('NURBSSurface:insertKnotU', 'r must be a nonnegative integer.');
+            end
+            if r == 0
+                S2 = obj.copySurfaceOnly();
+                return;
+            end
+        
+            u = obj.clampU(u);
+        
+            tol = 1e-12;
+            s = sum(abs(obj.U - u) < tol);
+        
+            if u > obj.domainU(1) + tol && u < obj.domainU(2) - tol
+                if s + r > obj.p
+                    error('NURBSSurface:insertKnotU', ...
+                        'Cannot insert knot %g %d times: multiplicity would exceed degree.', u, r);
+                end
+            end
+        
+            for j = 1:obj.m+1
+                PwCol = squeeze(obj.Pw(:,j,:));
+                [QwCol, Uq] = geom.NURBSSurface.curveKnotInsertHomogeneous( ...
+                    obj.p, obj.U, PwCol, u, r);
+        
+                if j == 1
+                    Qw = zeros(size(QwCol,1), obj.m+1, 4);
+                end
+        
+                Qw(:,j,:) = QwCol;
+            end
+        
+            W2 = Qw(:,:,4);
+            P2 = Qw(:,:,1:3) ./ W2;
+        
+            S2 = geom.NURBSSurface(P2, obj.p, obj.q, Uq, obj.V, W2);
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance = obj.trimTolerance;
+        end
+        
+        function S2 = insertKnotV(obj, v, r)
+        %INSERTKNOTV Exact surface knot insertion in v-direction.
+        % Implements The NURBS Book Algorithm A5.3 in v-direction.
+        
+            if nargin < 3 || isempty(r), r = 1; end
+            if r < 0 || r ~= floor(r)
+                error('NURBSSurface:insertKnotV', 'r must be a nonnegative integer.');
+            end
+            if r == 0
+                S2 = obj.copySurfaceOnly();
+                return;
+            end
+        
+            v = obj.clampV(v);
+        
+            tol = 1e-12;
+            s = sum(abs(obj.V - v) < tol);
+        
+            if v > obj.domainV(1) + tol && v < obj.domainV(2) - tol
+                if s + r > obj.q
+                    error('NURBSSurface:insertKnotV', ...
+                        'Cannot insert knot %g %d times: multiplicity would exceed degree.', v, r);
+                end
+            end
+        
+            for i = 1:obj.n+1
+                PwRow = squeeze(obj.Pw(i,:,:));
+                [QwRow, Vq] = geom.NURBSSurface.curveKnotInsertHomogeneous( ...
+                    obj.q, obj.V, PwRow, v, r);
+        
+                if i == 1
+                    Qw = zeros(obj.n+1, size(QwRow,1), 4);
+                end
+        
+                Qw(i,:,:) = QwRow;
+            end
+        
+            W2 = Qw(:,:,4);
+            P2 = Qw(:,:,1:3) ./ W2;
+        
+            S2 = geom.NURBSSurface(P2, obj.p, obj.q, obj.U, Vq, W2);
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance = obj.trimTolerance;
+        end
     end
+
 
     methods (Access = private)
         function u = clampU(obj, u)
@@ -1587,6 +1768,10 @@ classdef NURBSSurface < handle
         end
     end
 
+
+
+
+    
     methods (Static)
         function t = makeSpacing(t0, t1, n, type)
             switch lower(type)
@@ -2204,5 +2389,140 @@ classdef NURBSSurface < handle
             T(1:3,1:3) = R;
             T(1:3,4) = t;
         end
+
+        function N = allBasisFuns(i, u, p, U)
+            N = zeros(p+1,p+1);
+            N(1,1) = 1.0;
+            left = zeros(1,p+1);
+            right = zeros(1,p+1);
+        
+            for j = 1:p
+            left(j+1)  = u - U(i+1-j);
+            right(j+1) = U(i+j) - u;
+                saved = 0.0;
+        
+                for r = 0:j-1
+                    temp = N(j,r+1) / (right(r+2) + left(j-r+1));
+                    N(j+1,r+1) = saved + right(r+2) * temp;
+                    saved = left(j-r+1) * temp;
+                end
+        
+                N(j+1,j+1) = saved;
+            end
+        end
+
+
+        function PK = curveDerivCpts1D(p, U, P, d, r1, r2)
+            % P is local block P(r1:r2), 1-based input indices.
+            r = r2 - r1;
+            du = min(d,p);
+        
+            PK = cell(du+1,1);
+            PK{1} = P;
+        
+            for k = 1:du
+                prev = PK{k};
+                cur = zeros(r-k+1, size(P,2));
+        
+                for i = 0:r-k
+                    global0 = (r1-1) + i; % book-style zero-based control index
+                    denom = U(global0+p+2) - U(global0+k+1);
+                    cur(i+1,:) = (p-k+1) * (prev(i+2,:) - prev(i+1,:)) / denom;
+                end
+        
+                PK{k+1} = cur;
+            end
+        end
+
+        function SKL = rationalSurfaceDerivativesFromHomogeneous(Aders,wders,d)
+            SKL = cell(d+1,d+1);
+            for k = 0:d
+                for l = 0:d
+                    SKL{k+1,l+1} = zeros(1,3);
+                end
+            end
+        
+            w00 = wders(1,1);
+            if abs(w00) < eps
+                error('NURBSSurface:ZeroWeight', ...
+                    'Surface weight function vanished.');
+            end
+        
+            for k = 0:d
+                for l = 0:(d-k)
+                    vkl = Aders{k+1,l+1};
+        
+                    for j = 1:l
+                        vkl = vkl - nchoosek(l,j) * wders(1,j+1) * SKL{k+1,l-j+1};
+                    end
+        
+                    for i = 1:k
+                        vkl = vkl - nchoosek(k,i) * wders(i+1,1) * SKL{k-i+1,l+1};
+                        for j = 1:l
+                            vkl = vkl - nchoosek(k,i) * nchoosek(l,j) * ...
+                                wders(i+1,j+1) * SKL{k-i+1,l-j+1};
+                        end
+                    end
+        
+                    SKL{k+1,l+1} = vkl / w00;
+                end
+            end
+        end
+
+        function [Qw, Uq] = curveKnotInsertHomogeneous(p, U, Pw, u, r)
+        %CURVEKNOTINSERTHOMOGENEOUS Exact homogeneous curve knot insertion.
+        % A5.1-style insertion, repeated r times.
+        %
+        % Pw is [n+1 x dim], usually dim=4.
+        
+            Qw = Pw;
+            Uq = U;
+        
+            for rep = 1:r
+                n = size(Qw,1) - 1;
+                span = geom.BasisFunctions.FindSpan(n, p, u, Uq);
+                s = sum(abs(Uq - u) < 1e-12);
+        
+                if s >= p
+                    continue;
+                end
+        
+                Up = zeros(1, numel(Uq) + 1);
+                Up(1:span) = Uq(1:span);
+                Up(span+1) = u;
+                Up(span+2:end) = Uq(span+1:end);
+        
+                Rw = zeros(size(Qw,1) + 1, size(Qw,2));
+        
+                Rw(1:span-p,:) = Qw(1:span-p,:);
+                Rw(span-s+1:end,:) = Qw(span-s:end,:);
+        
+                for j = (span-p+1):(span-s)
+                    denom = Uq(j+p) - Uq(j);
+                    if abs(denom) < 1e-14
+                        alpha = 0.0;
+                    else
+                        alpha = (u - Uq(j)) / denom;
+                    end
+        
+                    Rw(j,:) = alpha * Qw(j,:) + (1-alpha) * Qw(j-1,:);
+                end
+        
+                Qw = Rw;
+                Uq = Up;
+            end
+        end
+
+
+
+
+
+
+
     end
+
+
+
+
+
 end
