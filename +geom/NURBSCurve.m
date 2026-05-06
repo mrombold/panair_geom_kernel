@@ -712,7 +712,7 @@ classdef NURBSCurve < handle
                     plot3(kp(:,1), kp(:,2), kp(:,3), 'k^', 'MarkerFaceColor', 'k');
                 end
             end
-
+            view(45,30)
             axis equal;
             grid on;
             xlabel('X'); ylabel('Y'); zlabel('Z');
