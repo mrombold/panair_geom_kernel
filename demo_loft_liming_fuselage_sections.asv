@@ -111,6 +111,7 @@ staS=[temp4(1) temp5(2) temp4(3)]
 
 
 S=geom.NURBSSurface.loft({frame0 frame20 frame40 frame60 frame80 frame100},3)
+%Sgordon=geom.NURBSSurface.gordon({frame0 frame20 frame40 frame60 frame80 frame100},{Upr, UprShldr, MaxB},2,3)
 Sconic = geom.ConicSurface( ...
     'UpperGuide', Upr, ...
     'LowerGuide', MaxB, ...
@@ -127,8 +128,9 @@ M = Sconic.isoMesh(101, 41);
 %[Lwr,~]=geom.Loft.limingConic([0 0 30], [100 0 8],[25 0 8], [25 0 15])
 
 profiles = {frame0, frame20, frame40, frame60, frame80, frame100};
-guides   = {Upr, UprShldr, MaxB};
+guides   = {Upr, MaxB};
 
+Sguided = geom.NURBSSurface.gordon(profiles, guides, 2, 3);
 
 
 
@@ -149,13 +151,13 @@ frame60.plot()
 frame80.plot()
 frame100.plot()
 S.plot()
+Sconic_nurbs.plot()
+Sguided.plot()
 
 hSurf = surf(M.X, M.Y, M.Z, ...
     'FaceAlpha', 0.75, ...
     'EdgeColor', [0.25 0.25 0.25], ...
     'FaceColor', [0.60 0.78 0.96]);
-
-
 
 %Sgordon.plot()
 ax = gca;

@@ -262,37 +262,41 @@ classdef NURBSSurface < handle
         function C = evaluate(obj, u, v)
             u = u(:);
             v = v(:);
+        
             if isscalar(u), u = repmat(u, numel(v), 1); end
             if isscalar(v), v = repmat(v, numel(u), 1); end
+        
             assert(numel(u) == numel(v), ...
                 'NURBSSurface:evaluate', 'u and v must match in length.');
-
+        
             np = numel(u);
             C = zeros(np, 3);
-
+        
             for k = 1:np
                 uk = obj.clampU(u(k));
                 vk = obj.clampV(v(k));
-
+        
                 uspan = geom.BasisFunctions.FindSpan(obj.n, obj.p, uk, obj.U);
                 vspan = geom.BasisFunctions.FindSpan(obj.m, obj.q, vk, obj.V);
-
+        
                 Nu = geom.BasisFunctions.BasisFuns(uspan, uk, obj.p, obj.U);
                 Nv = geom.BasisFunctions.BasisFuns(vspan, vk, obj.q, obj.V);
-
+        
                 Sw = zeros(1, 4);
+        
                 for l = 0:obj.q
                     temp = zeros(1, 4);
                     jj = vspan - obj.q + l;
+        
                     for i = 0:obj.p
                         ii = uspan - obj.p + i;
-                        wij = obj.W(ii, jj);
-                        Pij = reshape(obj.P(ii, jj, :), 1, 3);
-                        temp = temp + Nu(i+1) * [wij * Pij, wij];
+                        Pw_ij = reshape(obj.Pw_(ii, jj, :), 1, 4);
+                        temp = temp + Nu(i+1) * Pw_ij;
                     end
+        
                     Sw = Sw + Nv(l+1) * temp;
                 end
-
+        
                 C(k,:) = Sw(1:3) / Sw(4);
             end
         end
@@ -465,10 +469,9 @@ classdef NURBSSurface < handle
                         for j = 0:obj.q
                             jj = vspan - obj.q + j;
                             B = Nu(k+1, i+1) * Nv(l+1, j+1);
-                            wij = obj.W(ii, jj);
-                            Pij = reshape(obj.P(ii, jj, :), 1, 3);
-                            Akl = Akl + B * wij * Pij;
-                            wkl = wkl + B * wij;
+                            Pw_ij = reshape(obj.Pw_(ii, jj, :), 1, 4);
+                            Akl = Akl + B * Pw_ij(1:3);
+                            wkl = wkl + B * Pw_ij(4);
                         end
                     end
                     Aders{k+1,l+1} = Akl;
@@ -1066,20 +1069,124 @@ classdef NURBSSurface < handle
 
         
         function S2 = refine(obj, Xu, Xv)
-            if nargin < 2, Xu = []; end
-            if nargin < 3, Xv = []; end
+        %REFINE Batch knot refinement using A5.5-style surface refinement.
+        % Xu and Xv may contain repeated knots.
+        
+            if nargin < 2 || isempty(Xu), Xu = []; end
+            if nargin < 3 || isempty(Xv), Xv = []; end
         
             S2 = obj.copySurfaceOnly();
         
-            Xu = sort(Xu(:).');
-            for k = 1:numel(Xu)
-                S2 = S2.insertKnotU(Xu(k), 1);
+            if ~isempty(Xu)
+                S2 = S2.refineKnotVectSurfaceU(Xu);
             end
         
-            Xv = sort(Xv(:).');
-            for k = 1:numel(Xv)
-                S2 = S2.insertKnotV(Xv(k), 1);
+            if ~isempty(Xv)
+                S2 = S2.refineKnotVectSurfaceV(Xv);
             end
+        end
+
+        function S2 = refineKnotVectSurfaceU(obj, X)
+        %REFINEKNOTVECTSURFACEU Batch refine surface knot vector in U.
+        % Implements The NURBS Book Algorithm A5.5 in the U direction,
+        % using homogeneous control points.
+        
+            X = sort(X(:).');
+            if isempty(X)
+                S2 = obj.copySurfaceOnly();
+                return;
+            end
+        
+            tol = 1e-12;
+        
+            for kk = 1:numel(X)
+                u = X(kk);
+                if u < obj.domainU(1)-tol || u > obj.domainU(2)+tol
+                    error('NURBSSurface:refineKnotVectSurfaceU', ...
+                        'Refinement knot %.16g lies outside active U domain.', u);
+                end
+        
+                sOld = sum(abs(obj.U - u) < tol);
+                sAdd = sum(abs(X - u) < tol);
+        
+                if u > obj.domainU(1)+tol && u < obj.domainU(2)-tol
+                    if sOld + sAdd > obj.p
+                        error('NURBSSurface:refineKnotVectSurfaceU', ...
+                            'Refinement would exceed degree multiplicity at u = %.16g.', u);
+                    end
+                end
+            end
+        
+            for j = 1:obj.m+1
+                PwCol = squeeze(obj.Pw_(:,j,:));
+        
+                [QwCol, Ubar] = geom.NURBSSurface.curveKnotRefineHomogeneous( ...
+                    obj.p, obj.U, PwCol, X);
+        
+                if j == 1
+                    Qw = zeros(size(QwCol,1), obj.m+1, 4);
+                end
+        
+                Qw(:,j,:) = QwCol;
+            end
+        
+            S2 = geom.NURBSSurface.fromHomogeneous(Qw, obj.p, obj.q, Ubar, obj.V);
+        
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance  = obj.trimTolerance;
+        end
+        
+        
+        function S2 = refineKnotVectSurfaceV(obj, X)
+        %REFINEKNOTVECTSURFACEV Batch refine surface knot vector in V.
+        % Implements The NURBS Book Algorithm A5.5 in the V direction,
+        % using homogeneous control points.
+        
+            X = sort(X(:).');
+            if isempty(X)
+                S2 = obj.copySurfaceOnly();
+                return;
+            end
+        
+            tol = 1e-12;
+        
+            for kk = 1:numel(X)
+                v = X(kk);
+                if v < obj.domainV(1)-tol || v > obj.domainV(2)+tol
+                    error('NURBSSurface:refineKnotVectSurfaceV', ...
+                        'Refinement knot %.16g lies outside active V domain.', v);
+                end
+        
+                sOld = sum(abs(obj.V - v) < tol);
+                sAdd = sum(abs(X - v) < tol);
+        
+                if v > obj.domainV(1)+tol && v < obj.domainV(2)-tol
+                    if sOld + sAdd > obj.q
+                        error('NURBSSurface:refineKnotVectSurfaceV', ...
+                            'Refinement would exceed degree multiplicity at v = %.16g.', v);
+                    end
+                end
+            end
+        
+            for i = 1:obj.n+1
+                PwRow = squeeze(obj.Pw_(i,:,:));
+        
+                [QwRow, Vbar] = geom.NURBSSurface.curveKnotRefineHomogeneous( ...
+                    obj.q, obj.V, PwRow, X);
+        
+                if i == 1
+                    Qw = zeros(obj.n+1, size(QwRow,1), 4);
+                end
+        
+                Qw(i,:,:) = QwRow;
+            end
+        
+            S2 = geom.NURBSSurface.fromHomogeneous(Qw, obj.p, obj.q, obj.U, Vbar);
+        
+            S2.trimOuterLoops = obj.trimOuterLoops;
+            S2.trimInnerLoops = obj.trimInnerLoops;
+            S2.trimTolerance  = obj.trimTolerance;
         end
         
         
@@ -1226,45 +1333,45 @@ classdef NURBSSurface < handle
 
         function C = isoCurveU(obj, v0)
             v0 = obj.clampV(v0);
+        
             vspan = geom.BasisFunctions.FindSpan(obj.m, obj.q, v0, obj.V);
             Nv = geom.BasisFunctions.BasisFuns(vspan, v0, obj.q, obj.V);
-
-            n = obj.n;
-            Pw = zeros(n + 1, 4);
-
-            for i = 0:n
+        
+            Pw = zeros(obj.n + 1, 4);
+        
+            for i = 1:obj.n+1
                 for l = 0:obj.q
                     jj = vspan - obj.q + l;
-                    wij = obj.W(i+1, jj);
-                    Pij = reshape(obj.P(i+1, jj, :), 1, 3);
-                    Pw(i+1, :) = Pw(i+1, :) + Nv(l+1) * [wij * Pij, wij];
+                    Pw_ij = reshape(obj.Pw_(i, jj, :), 1, 4);
+                    Pw(i,:) = Pw(i,:) + Nv(l+1) * Pw_ij;
                 end
             end
-
+        
             W2 = Pw(:,4);
             P2 = Pw(:,1:3) ./ W2;
+        
             C = geom.NURBSCurve(P2, obj.p, obj.U, W2);
         end
 
         function C = isoCurveV(obj, u0)
             u0 = obj.clampU(u0);
+        
             uspan = geom.BasisFunctions.FindSpan(obj.n, obj.p, u0, obj.U);
             Nu = geom.BasisFunctions.BasisFuns(uspan, u0, obj.p, obj.U);
-
-            m = obj.m;
-            Pw = zeros(m + 1, 4);
-
-            for j = 0:m
+        
+            Pw = zeros(obj.m + 1, 4);
+        
+            for j = 1:obj.m+1
                 for l = 0:obj.p
                     ii = uspan - obj.p + l;
-                    wij = obj.W(ii, j+1);
-                    Pij = reshape(obj.P(ii, j+1, :), 1, 3);
-                    Pw(j+1, :) = Pw(j+1, :) + Nu(l+1) * [wij * Pij, wij];
+                    Pw_ij = reshape(obj.Pw_(ii, j, :), 1, 4);
+                    Pw(j,:) = Pw(j,:) + Nu(l+1) * Pw_ij;
                 end
             end
-
+        
             W2 = Pw(:,4);
             P2 = Pw(:,1:3) ./ W2;
+        
             C = geom.NURBSCurve(P2, obj.q, obj.V, W2);
         end
 
@@ -1697,7 +1804,9 @@ classdef NURBSSurface < handle
     
 
         function obj2 = copySurfaceOnly(obj)
-            obj2 = geom.NURBSSurface(obj.P, obj.p, obj.q, obj.U, obj.V, obj.W);
+            obj2 = geom.NURBSSurface.fromHomogeneous( ...
+                obj.Pw_, obj.p, obj.q, obj.U, obj.V);
+        
             obj2.trimOuterLoops = obj.trimOuterLoops;
             obj2.trimInnerLoops = obj.trimInnerLoops;
             obj2.trimTolerance = obj.trimTolerance;
@@ -1741,10 +1850,7 @@ classdef NURBSSurface < handle
                 Qw(:,j,:) = QwCol;
             end
         
-            W2 = Qw(:,:,4);
-            P2 = Qw(:,:,1:3) ./ W2;
-        
-            S2 = geom.NURBSSurface(P2, obj.p, obj.q, Uq, obj.V, W2);
+            S2 = geom.NURBSSurface.fromHomogeneous(Qw, obj.p, obj.q, Uq, obj.V);
             S2.trimOuterLoops = obj.trimOuterLoops;
             S2.trimInnerLoops = obj.trimInnerLoops;
             S2.trimTolerance = obj.trimTolerance;
@@ -1787,10 +1893,7 @@ classdef NURBSSurface < handle
                 Qw(i,:,:) = QwRow;
             end
         
-            W2 = Qw(:,:,4);
-            P2 = Qw(:,:,1:3) ./ W2;
-        
-            S2 = geom.NURBSSurface(P2, obj.p, obj.q, obj.U, Vq, W2);
+            S2 = geom.NURBSSurface.fromHomogeneous(Qw, obj.p, obj.q, obj.U, Vq);
             S2.trimOuterLoops = obj.trimOuterLoops;
             S2.trimInnerLoops = obj.trimInnerLoops;
             S2.trimTolerance = obj.trimTolerance;
@@ -1834,6 +1937,25 @@ classdef NURBSSurface < handle
 
     
     methods (Static)
+
+        function S = fromHomogeneous(Pw, p, q, U, V)
+            if ndims(Pw) ~= 3 || size(Pw,3) ~= 4
+                error('NURBSSurface:fromHomogeneous', ...
+                    'Pw must be [n+1 x m+1 x 4].');
+            end
+        
+            W = Pw(:,:,4);
+        
+            if any(W(:) <= 0)
+                error('NURBSSurface:fromHomogeneous', ...
+                    'Weights must be strictly positive.');
+            end
+        
+            P = Pw(:,:,1:3) ./ W;
+        
+            S = geom.NURBSSurface(P, p, q, U, V, W);
+        end
+
         function t = makeSpacing(t0, t1, n, type)
             switch lower(type)
                 case 'cosine'
@@ -2718,6 +2840,99 @@ classdef NURBSSurface < handle
     end
 
     methods (Static, Access = private)
+
+        function [Qw, Ubar] = curveKnotRefineHomogeneous(p, U, Pw, X)
+        %CURVEKNOTREFINEHOMOGENEOUS Batch curve knot refinement.
+        % Implements Piegl & Tiller Algorithm A5.4, adapted to MATLAB indexing.
+        %
+        % Inputs:
+        %   p  : degree
+        %   U  : original knot vector
+        %   Pw : [n+1 x dim] homogeneous control points
+        %   X  : refinement knot vector, sorted or unsorted
+        %
+        % Outputs:
+        %   Qw   : refined homogeneous control points
+        %   Ubar : refined knot vector
+        
+            X = sort(X(:).');
+            U = U(:).';
+        
+            if isempty(X)
+                Qw = Pw;
+                Ubar = U;
+                return;
+            end
+        
+            n = size(Pw,1) - 1;        % zero-based last control index
+            m = n + p + 1;             % zero-based last knot index
+            r = numel(X) - 1;          % zero-based last refinement-knot index
+            dim = size(Pw,2);
+        
+            a = geom.BasisFunctions.FindSpan(n, p, X(1), U) - 1;
+            b = geom.BasisFunctions.FindSpan(n, p, X(end), U) - 1;
+            b = b + 1;
+        
+            Qw   = zeros(n + r + 2, dim);
+            Ubar = zeros(1, m + r + 2);
+        
+            % Save unaltered control points.
+            for j = 0:(a-p)
+                Qw(j+1,:) = Pw(j+1,:);
+            end
+        
+            for j = (b-1):n
+                Qw(j+r+2,:) = Pw(j+1,:);
+            end
+        
+            % Save unaltered knots.
+            for j = 0:a
+                Ubar(j+1) = U(j+1);
+            end
+        
+            for j = (b+p):m
+                Ubar(j+r+2) = U(j+1);
+            end
+        
+            i = b + p - 1;
+            k = b + p + r;
+        
+            for j = r:-1:0
+                xj = X(j+1);
+        
+                while xj <= U(i+1) && i > a
+                    Qw(k-p,:) = Pw(i-p,:);
+                    Ubar(k+1) = U(i+1);
+                    k = k - 1;
+                    i = i - 1;
+                end
+        
+                Qw(k-p,:) = Qw(k-p+1,:);
+        
+                for l = 1:p
+                    ind = k - p + l;
+        
+                    denom = Ubar(k+l+1) - U(i-p+l+1);
+        
+                    if abs(denom) < eps
+                        alpha = 0.0;
+                    else
+                        alpha = (Ubar(k+l+1) - xj) / denom;
+                    end
+        
+                    if abs(alpha) < eps
+                        Qw(ind,:) = Qw(ind+1,:);
+                    else
+                        Qw(ind,:) = alpha * Qw(ind,:) + ...
+                                    (1.0 - alpha) * Qw(ind+1,:);
+                    end
+                end
+        
+                Ubar(k+1) = xj;
+                k = k - 1;
+            end
+        end
+
         function T = axisRotationTransform(point, axisDir, theta)
             axisDir = axisDir(:) / norm(axisDir);
             x = axisDir(1); y = axisDir(2); z = axisDir(3);
