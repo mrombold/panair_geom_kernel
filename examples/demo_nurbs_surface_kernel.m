@@ -532,24 +532,79 @@ end
 fprintf('\n--- 17. Gordon surface / network compatibility ---\n');
 
 try
-    p1 = geom.NURBSCurve([0 0 0; 1 0.0 0.4; 2 0.0 0.3; 3 0 0], 3);
-    p2 = geom.NURBSCurve([0 0.8 0.3; 1 0.8 0.8; 2 0.8 0.6; 3 0.8 0.2], 3);
-    p3 = geom.NURBSCurve([0 1.6 0.1; 1 1.6 0.7; 2 1.6 0.9; 3 1.6 0.3], 3);
-    p4 = geom.NURBSCurve([0 2.4 0.0; 1 2.4 0.2; 2 2.4 0.5; 3 2.4 0.1], 3);
-
-    g1 = geom.NURBSCurve([0 0 0; 0 0.8 0.4; 0 1.6 0.1; 0 2.4 0], 3);
-    g2 = geom.NURBSCurve([1 0.0 0.4; 1 0.8 0.8; 1 1.6 0.7; 1 2.4 0.2], 3);
-    g3 = geom.NURBSCurve([2 0.0 0.3; 2 0.8 0.6; 2 1.6 0.9; 2 2.4 0.5], 3);
-    g4 = geom.NURBSCurve([3 0.0 0; 3 0.8 0.2; 3 1.6 0.3; 3 2.4 0.1], 3);
+    uPar = [0; 1/3; 2/3; 1];
+    vPar = [0; 1/3; 2/3; 1];
+    
+    Q = zeros(4,4,3);
+    
+    Q(:,1,:) = [0 0.0 0.0;
+                1 0.0 0.4;
+                2 0.0 0.3;
+                3 0.0 0.0];
+    
+    Q(:,2,:) = [0 0.8 0.3;
+                1 0.8 0.8;
+                2 0.8 0.6;
+                3 0.8 0.2];
+    
+    Q(:,3,:) = [0 1.6 0.1;
+                1 1.6 0.7;
+                2 1.6 0.9;
+                3 1.6 0.3];
+    
+    Q(:,4,:) = [0 2.4 0.0;
+                1 2.4 0.2;
+                2 2.4 0.5;
+                3 2.4 0.1];
+    
+    p1 = geom.NURBSCurve.globalInterpWithParams(squeeze(Q(:,1,:)), 3, uPar);
+    p2 = geom.NURBSCurve.globalInterpWithParams(squeeze(Q(:,2,:)), 3, uPar);
+    p3 = geom.NURBSCurve.globalInterpWithParams(squeeze(Q(:,3,:)), 3, uPar);
+    p4 = geom.NURBSCurve.globalInterpWithParams(squeeze(Q(:,4,:)), 3, uPar);
+    
+    g1 = geom.NURBSCurve.globalInterpWithParams(squeeze(Q(1,:,:)), 3, vPar);
+    g2 = geom.NURBSCurve.globalInterpWithParams(squeeze(Q(2,:,:)), 3, vPar);
+    g3 = geom.NURBSCurve.globalInterpWithParams(squeeze(Q(3,:,:)), 3, vPar);
+    g4 = geom.NURBSCurve.globalInterpWithParams(squeeze(Q(4,:,:)), 3, vPar);
 
     [profilesC, guidesC, uPar, vPar] = geom.NURBSSurface.makeCompatibleNetwork( ...
         {p1,p2,p3,p4}, {g1,g2,g3,g4});
+
     fprintf('  network compatible: %d profiles, %d guides\n', numel(profilesC), numel(guidesC));
     fprintf('  uPar = %s\n', mat2str(uPar.',3));
     fprintf('  vPar = %s\n', mat2str(vPar.',3));
 
     Sgordon = geom.NURBSSurface.gordon({p1,p2,p3,p4}, {g1,g2,g3,g4}, 3, 3, 25, 25);
     fprintf('  Gordon net size = %d x %d\n', size(Sgordon.P,1), size(Sgordon.P,2));
+
+    % Verify Gordon interpolation along all network curves.
+    ug = linspace(Sgordon.domainU(1), Sgordon.domainU(2), 21);
+    vg = linspace(Sgordon.domainV(1), Sgordon.domainV(2), 21);
+
+    maxProfileErr = 0;
+    profs = {p1,p2,p3,p4};
+    for j = 1:numel(profs)
+        vj = vPar(j);
+        for ii = 1:numel(ug)
+            uc = profs{j}.domain(1) + ug(ii) * diff(profs{j}.domain);
+            maxProfileErr = max(maxProfileErr, ...
+                norm(Sgordon.evaluate(ug(ii), vj) - profs{j}.evaluate(uc)));
+        end
+    end
+
+    maxGuideErr = 0;
+    guides = {g1,g2,g3,g4};
+    for i = 1:numel(guides)
+        ui = uPar(i);
+        for jj = 1:numel(vg)
+            vc = guides{i}.domain(1) + vg(jj) * diff(guides{i}.domain);
+            maxGuideErr = max(maxGuideErr, ...
+                norm(Sgordon.evaluate(ui, vg(jj)) - guides{i}.evaluate(vc)));
+        end
+    end
+
+    fprintf('  Gordon profile interpolation error = %.3e\n', maxProfileErr);
+    fprintf('  Gordon guide interpolation error   = %.3e\n', maxGuideErr);
 
     fig19 = figure('Name','19 - Gordon surface');
     Sgordon.plot(28, 28, 'ShowCP', true, 'ShowIso', true);
@@ -562,42 +617,12 @@ try
     g2.plot(100, 'ShowCP', false, 'Color', [0.1 0.1 0.9], 'LineWidth', 2.0);
     g3.plot(100, 'ShowCP', false, 'Color', [0.1 0.1 0.9], 'LineWidth', 2.0);
     g4.plot(100, 'ShowCP', false, 'Color', [0.1 0.1 0.9], 'LineWidth', 2.0);
-    title('Gordon surface');
+    title('Exact Gordon surface');
     view(3);
 catch ME
     fprintf('  Gordon section failed: %s\n', ME.message);
 end
 
-%% ======================================================================
-% 18. MULTI-GORDON BLEND
-%% ======================================================================
-fprintf('\n--- 18. Multi-Gordon blend ---\n');
-
-try
-    p1b = geom.NURBSCurve([0 0 0; 1 0.1 0.2; 2 0.0 0.4; 3 0 0.1], 3);
-    p2b = geom.NURBSCurve([0 0.8 0.1; 1 0.8 0.5; 2 0.8 0.7; 3 0.8 0.3], 3);
-    p3b = geom.NURBSCurve([0 1.6 0.2; 1 1.6 0.4; 2 1.6 0.8; 3 1.6 0.2], 3);
-    p4b = geom.NURBSCurve([0 2.4 0.1; 1 2.4 0.2; 2 2.4 0.4; 3 2.4 0.0], 3);
-
-    g1b = geom.NURBSCurve([0 0 0; 0 0.8 0.1; 0 1.6 0.2; 0 2.4 0.1], 3);
-    g2b = geom.NURBSCurve([1 0.1 0.2; 1 0.8 0.5; 1 1.6 0.4; 1 2.4 0.2], 3);
-    g3b = geom.NURBSCurve([2 0.0 0.4; 2 0.8 0.7; 2 1.6 0.8; 2 2.4 0.4], 3);
-    g4b = geom.NURBSCurve([3 0.1 0.1; 3 0.8 0.3; 3 1.6 0.2; 3 2.4 0.0], 3);
-
-    Smg = geom.NURBSSurface.multiGordon( ...
-        {{p1,p2,p3,p4}, {p1b,p2b,p3b,p4b}}, ...
-        {{g1,g2,g3,g4}, {g1b,g2b,g3b,g4b}}, ...
-        [0.65; 0.35], 3, 3, 25, 25);
-
-    fprintf('  multi-Gordon net size = %d x %d\n', size(Smg.P,1), size(Smg.P,2));
-
-    fig20 = figure('Name','20 - Multi-Gordon');
-    Smg.plot(28, 28, 'ShowCP', true, 'ShowIso', true);
-    title('Multi-Gordon blended surface');
-    view(3);
-catch ME
-    fprintf('  Multi-Gordon section failed: %s\n', ME.message);
-end
 
 %% ======================================================================
 % 19. SURFACE OF REVOLUTION
@@ -610,7 +635,7 @@ try
                              1.4 0.0 0.8;
                              1.6 0.0 1.2], 3);
 
-    Srev = geom.NURBSSurface.revolve(Cprof, [0 0 0], [0 0 1], 2*pi, 3, 9);
+    Srev = geom.NURBSSurface.revolve(Cprof, [0 0 0], [0 0 1], 2*pi);
     fprintf('  revolution net size = %d x %d\n', size(Srev.P,1), size(Srev.P,2));
 
     fig21 = figure('Name','21 - Surface of revolution');

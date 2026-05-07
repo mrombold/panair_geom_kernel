@@ -179,6 +179,8 @@ classdef NURBSCurve < handle
             if any(obj.Pw_(:,4) <= 0)
                 error('NURBSCurve:Validate', 'Weights must be strictly positive.');
             end
+        
+            tf = true;
         end
 
         function tf = isClamped(obj)
@@ -321,61 +323,116 @@ classdef NURBSCurve < handle
     end
 
     methods
-        function C2 = insertKnot(obj, u, r)
-        % Exact knot insertion by repeated single insertion.
-            if nargin < 3 || isempty(r), r = 1; end
-            if r < 0 || r ~= floor(r)
-                error('NURBSCurve:insertKnot', 'r must be a nonnegative integer.');
-            end
 
-            C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
-            for ii = 1:r
-                C2 = C2.insertKnotOnce(obj.clamp(u));
+        function C2 = insertKnot(obj, u, r)
+        %INSERTKNOT Exact curve knot insertion.
+        % Implements Piegl & Tiller Algorithm A5.1, CurveKnotIns,
+        % in homogeneous coordinates.
+        
+            if nargin < 3 || isempty(r), r = 1; end
+        
+            r = floor(r);
+            if r < 0
+                error('NURBSCurve:insertKnot', ...
+                    'r must be a nonnegative integer.');
             end
+        
+            if r == 0
+                C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
+                return;
+            end
+        
+            u = obj.clamp(u);
+        
+            s = obj.knotMultiplicity(u, 1e-12);
+            if u > obj.domain(1) + 1e-12 && u < obj.domain(2) - 1e-12
+                if s + r > obj.p
+                    error('NURBSCurve:insertKnot', ...
+                        'Cannot insert knot: multiplicity s+r exceeds degree p.');
+                end
+            end
+        
+            [Qw, Uq] = geom.NURBSCurve.curveKnotInsertHomogeneous( ...
+                obj.p, obj.U, obj.Pw, u, r);
+        
+            W2 = Qw(:,4);
+            if any(W2 <= 0)
+                error('NURBSCurve:insertKnot', ...
+                    'Knot insertion produced nonpositive weights.');
+            end
+        
+            P2 = Qw(:,1:3) ./ W2;
+            C2 = geom.NURBSCurve(P2, obj.p, Uq, W2);
         end
 
         function C2 = refine(obj, X)
-        % Exact curve knot refinement by repeated single-knot insertion.
+        %REFINE Exact curve knot refinement by repeated A5.1 insertion.
+        
+            if nargin < 2 || isempty(X)
+                C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
+                return;
+            end
+        
             X = sort(X(:).');
             C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
+        
             for ii = 1:numel(X)
-                C2 = C2.insertKnotOnce(X(ii));
+                C2 = C2.insertKnot(X(ii), 1);
             end
         end
 
         function [Cleft, Cright] = split(obj, u0)
-        % Exact split by knot insertion to full multiplicity.
+        %SPLIT Exact curve split by full-multiplicity knot insertion.
+        %
+        % Keeps absolute knot domains:
+        %   Cleft.domain  = [old_start, u0]
+        %   Cright.domain = [u0, old_end]
+        
             u0 = obj.clamp(u0);
             tol = 1e-12;
-
+        
             if u0 <= obj.domain(1)+tol || u0 >= obj.domain(2)-tol
-                error('NURBSCurve:split', 'Split parameter must be strictly interior to the active domain.');
+                error('NURBSCurve:split', ...
+                    'Split parameter must be strictly interior to the active domain.');
             end
-
+        
             s = obj.knotMultiplicity(u0, tol);
+            if s > obj.p
+                error('NURBSCurve:split', ...
+                    'Split knot multiplicity exceeds degree.');
+            end
+        
             if s < obj.p
                 Cref = obj.insertKnot(u0, obj.p - s);
             else
-                Cref = obj;
+                Cref = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
             end
-
+        
             U2 = Cref.U;
             rows = find(abs(U2 - u0) < tol);
+        
+            if numel(rows) < obj.p
+                error('NURBSCurve:split', ...
+                    'Failed to create full-multiplicity split knot.');
+            end
+        
             first = rows(1);
             last  = rows(end);
-
+        
             idxSplit = last - obj.p;
-
+        
             P1 = Cref.P(1:idxSplit,:);
             W1 = Cref.W(1:idxSplit);
             U1 = [U2(1:last), u0];
-            U1 = geom.NURBSCurve.normalizeKnotVector(U1);
-
+        
             P2 = Cref.P(idxSplit:end,:);
             W2 = Cref.W(idxSplit:end);
             U3 = [u0, U2(first:end)];
-            U3 = geom.NURBSCurve.normalizeKnotVector(U3);
-
+        
+            % Clamp child endpoint knots at the split while preserving absolute domains.
+            U1(end-obj.p:end) = u0;
+            U3(1:obj.p+1) = u0;
+        
             Cleft  = geom.NURBSCurve(P1, obj.p, U1, W1);
             Cright = geom.NURBSCurve(P2, obj.p, U3, W2);
         end
@@ -527,100 +584,162 @@ classdef NURBSCurve < handle
             s = obj.knotMultiplicity(u, tol);
             k = obj.p - s;
         end
-
         function [C2, removed, maxErr] = removeKnot(obj, u, numRemove, tol, nSample)
-        % Remove one or more knot copies by reconstruction / validation.
+        %REMOVEKNOT Exact curve knot removal using Piegl & Tiller Algorithm A5.8.
+        %
+        % Attempts to remove up to numRemove copies of knot u.
+        % Works in homogeneous coordinates.
+        %
+        % Outputs:
+        %   C2      resulting curve
+        %   removed number of copies actually removed
+        %   maxErr  sampled Cartesian validation error after removals
+        
             if nargin < 3 || isempty(numRemove), numRemove = 1; end
             if nargin < 4 || isempty(tol), tol = 1e-10; end
             if nargin < 5 || isempty(nSample), nSample = max(200, 20*(obj.n+1)); end
-
+        
+            numRemove = floor(numRemove);
+            if numRemove < 0
+                error('NURBSCurve:removeKnot', ...
+                    'numRemove must be a nonnegative integer.');
+            end
+        
+            if numRemove == 0
+                C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
+                removed = 0;
+                maxErr = 0;
+                return;
+            end
+        
             Ccur = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
             removed = 0;
-            maxErr = 0;
-
-            for it = 1:numRemove
-                [ok, Cnext, err] = Ccur.tryRemoveOneKnot(u, tol, nSample);
+        
+            for rr = 1:numRemove
+                [ok, Unew, Pwnew] = geom.NURBSCurve.removeOneKnotA58( ...
+                    Ccur.p, Ccur.U, Ccur.Pw, u, tol);
+        
                 if ~ok
                     break;
                 end
-                Ccur = Cnext;
+        
+                Wnew = Pwnew(:,4);
+                if any(Wnew <= 0)
+                    break;
+                end
+        
+                Pnew = Pwnew(:,1:3) ./ Wnew;
+                Ccur = geom.NURBSCurve(Pnew, Ccur.p, Unew, Wnew);
                 removed = removed + 1;
-                maxErr = max(maxErr, err);
             end
-
+        
             C2 = Ccur;
+        
+            if removed == 0
+                maxErr = 0;
+            else
+                us = geom.NURBSCurve.validationParams(obj.U, C2.U, nSample);
+                maxErr = max(vecnorm(obj.evaluate(us) - C2.evaluate(us), 2, 2));
+            end
         end
 
+
         function [C2, maxErr] = reduceDegree(obj, numTimes, tol, nSample)
-        % Degree reduction by Bezier decomposition + homogeneous LSQ reduction.
+        %REDUCEDEGREE Exact/tolerance-based degree reduction.
+        %
+        % Reduces degree by one per pass using exact Bezier degree-reduction
+        % identities in homogeneous coordinates.
+        %
+        % If the curve is not reducible within tol, this errors.
+        % This replaces the old LSQ approximate degree reduction.
+        
             if nargin < 2 || isempty(numTimes), numTimes = 1; end
-            if nargin < 3 || isempty(tol), tol = inf; end
-            if nargin < 4 || isempty(nSample), nSample = max(300, 30*(obj.n+1)); end
-
-            if numTimes < 0 || numTimes ~= floor(numTimes)
-                error('NURBSCurve:reduceDegree', 'numTimes must be a nonnegative integer.');
+            if nargin < 3 || isempty(tol), tol = 1e-10; end
+            if nargin < 4 || isempty(nSample), nSample = max(400, 40*(obj.n+1)); end
+        
+            numTimes = floor(numTimes);
+            if numTimes < 0
+                error('NURBSCurve:reduceDegree', ...
+                    'numTimes must be a nonnegative integer.');
             end
-
+        
             Ccur = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
             maxErr = 0;
-
+        
             for step = 1:numTimes
                 if Ccur.p <= 0
-                    error('NURBSCurve:reduceDegree', 'Cannot reduce degree below zero.');
+                    error('NURBSCurve:reduceDegree', ...
+                        'Cannot reduce degree below zero.');
                 end
-
+        
+                pOld = Ccur.p;
+                pNew = pOld - 1;
+        
                 parts = Ccur.decomposeBezier();
-                ph = Ccur.p - 1;
                 nSeg = numel(parts);
-
+        
+                if nSeg == 0
+                    error('NURBSCurve:reduceDegree', ...
+                        'Bezier decomposition failed.');
+                end
+        
                 PwAll = [];
-                breaks = zeros(nSeg+1,1);
-                segErr = 0;
-
+                breaks = zeros(nSeg+1, 1);
+                localErr = 0;
+        
                 for s = 1:nSeg
                     Cseg = parts{s}.curve;
                     PwSeg = Cseg.Pw;
-                    [PwRed, eSeg] = geom.NURBSCurve.reduceBezierHomogeneousLSQ(PwSeg);
-                    segErr = max(segErr, eSeg);
-
+        
+                    [PwRed, eSeg] = geom.NURBSCurve.reduceBezierHomogeneousExact(PwSeg, tol);
+                    localErr = max(localErr, eSeg);
+        
                     if s == 1
                         PwAll = PwRed;
                         breaks(1) = parts{s}.u0;
                     else
                         PwAll = [PwAll; PwRed(2:end,:)]; %#ok<AGROW>
                     end
+        
                     breaks(s+1) = parts{s}.u1;
                 end
-
-                Unew = [repmat(breaks(1), 1, ph+1)];
+        
+                Unew = repmat(breaks(1), 1, pNew+1);
                 for s = 2:nSeg
-                    Unew = [Unew, repmat(breaks(s), 1, ph)]; %#ok<AGROW>
+                    Unew = [Unew, repmat(breaks(s), 1, pNew)]; %#ok<AGROW>
                 end
-                Unew = [Unew, repmat(breaks(end), 1, ph+1)];
-
+                Unew = [Unew, repmat(breaks(end), 1, pNew+1)];
+        
                 W2 = PwAll(:,4);
                 if any(W2 <= 0)
-                    error('NURBSCurve:reduceDegree', 'Degree reduction produced nonpositive weights.');
+                    error('NURBSCurve:reduceDegree', ...
+                        'Degree reduction produced nonpositive weights.');
                 end
-
+        
                 P2 = PwAll(:,1:3) ./ W2;
-                Cnext = geom.NURBSCurve(P2, ph, Unew, W2);
-
+                Cnext = geom.NURBSCurve(P2, pNew, Unew, W2);
+        
                 us = geom.NURBSCurve.validationParams(Ccur.U, Cnext.U, nSample);
                 err = max(vecnorm(Ccur.evaluate(us) - Cnext.evaluate(us), 2, 2));
-
-                maxErr = max(maxErr, max(segErr, err));
+        
+                maxErr = max(maxErr, max(localErr, err));
+        
                 if maxErr > tol
                     error('NURBSCurve:reduceDegree', ...
-                        'Degree reduction exceeded tolerance: %g > %g.', maxErr, tol);
+                        'Curve is not degree-reducible within tolerance: %.3e > %.3e.', ...
+                        maxErr, tol);
                 end
-
+        
                 Ccur = Cnext;
             end
-
+        
             C2 = Ccur;
         end
+
+
     end
+
+
 
     methods
         function [u_c, pt_c, d_c] = closestPoint(obj, P, u0)
@@ -1020,9 +1139,7 @@ classdef NURBSCurve < handle
             U = [0 0 0 1 1 1];
             C = geom.NURBSCurve(P, 2, U, W);
         end
-    end
 
-    methods (Static)
         function g = grevilleFromKnotVector(U, p)
             n = numel(U) - p - 2;
             g = zeros(n+1,1);
@@ -1037,6 +1154,271 @@ classdef NURBSCurve < handle
     end
 
     methods (Static, Access = private)
+
+        function [ok, Uout, Qw] = removeOneKnotA58(p, U, Pw, u, tol)
+        %REMOVEONEKNOTA58 Remove one copy of knot u using Algorithm A5.8 logic.
+        %
+        % This is a one-copy removal wrapper around the A5.8 local update.
+        % It works in homogeneous coordinates.
+        
+            ok = false;
+            U = U(:).';
+        
+            n = size(Pw,1) - 1;
+            m = n + p + 1;
+        
+            % Find the last occurrence r of knot u, using book-style zero-based r.
+            hits = find(abs(U - u) < 1e-12);
+            if isempty(hits)
+                Uout = U;
+                Qw = Pw;
+                return;
+            end
+        
+            % Do not remove end knots here.
+            if hits(1) <= p+1 || hits(end) >= numel(U)-p
+                Uout = U;
+                Qw = Pw;
+                return;
+            end
+        
+            s = numel(hits);
+            r = hits(end) - 1;     % zero-based index of last occurrence
+        
+            % Algorithm A5.8 local index range for one attempted removal.
+            ord = p + 1;
+            first = r - p;         % zero-based
+            last  = r - s;         % zero-based
+        
+            if first < 0 || last+1 > n
+                Uout = U;
+                Qw = Pw;
+                return;
+            end
+        
+            temp = zeros(last - first + 2, size(Pw,2));
+        
+            % MATLAB indices corresponding to book indices:
+            % temp(1)            stores Pw(first-1)
+            % temp(end)          stores Pw(last+1)
+            temp(1,:)   = Pw(first,:);      % book Pw[first-1] -> MATLAB first
+            temp(end,:) = Pw(last+2,:);     % book Pw[last+1]  -> MATLAB last+2
+        
+            i  = first;
+            j  = last;
+            ii = 1;
+            jj = size(temp,1);
+        
+            remflag = false;
+        
+            while (j - i) > 0
+                % Book:
+                % alfi = (u - U[i]) / (U[i+ord] - U[i])
+                % alfj = (u - U[j]) / (U[j+ord] - U[j])
+                %
+                % with zero-based U/P indices converted to MATLAB by +1.
+        
+                deni = U(i + ord + 1) - U(i + 1);
+                denj = U(j + ord + 1) - U(j + 1);
+        
+                if abs(deni) < eps || abs(denj) < eps
+                    Uout = U;
+                    Qw = Pw;
+                    return;
+                end
+        
+                alfi = (u - U(i + 1)) / deni;
+                alfj = (u - U(j + 1)) / denj;
+        
+                if abs(alfi) < eps || abs(1 - alfj) < eps
+                    Uout = U;
+                    Qw = Pw;
+                    return;
+                end
+        
+                % Book:
+                % temp[ii] = (Pw[i] - (1-alfi)*temp[ii-1]) / alfi
+                % temp[jj] = (Pw[j] - alfj*temp[jj+1]) / (1-alfj)
+                %
+                % MATLAB:
+                temp(ii+1,:) = (Pw(i+1,:) - (1-alfi)*temp(ii,:)) / alfi;
+                temp(jj-1,:) = (Pw(j+1,:) - alfj*temp(jj,:)) / (1-alfj);
+        
+                i  = i + 1;
+                ii = ii + 1;
+                j  = j - 1;
+                jj = jj - 1;
+            end
+        
+            if j < i
+                % Even case: compare the two independently computed middle points.
+                if norm(temp(ii,:) - temp(jj,:)) <= tol
+                    remflag = true;
+                end
+            else
+                % Odd case: compare reconstructed point to existing middle point.
+                den = U(i + ord + 1) - U(i + 1);
+                if abs(den) < eps
+                    Uout = U;
+                    Qw = Pw;
+                    return;
+                end
+        
+                alfa = (u - U(i + 1)) / den;
+                test = alfa * temp(ii+1,:) + (1-alfa) * temp(ii,:);
+        
+                if norm(Pw(i+1,:) - test) <= tol
+                    remflag = true;
+                end
+            end
+        
+            if ~remflag
+                Uout = U;
+                Qw = Pw;
+                return;
+            end
+        
+            % Accepted: build new control polygon.
+            Qw = zeros(n, size(Pw,2));  % one fewer control point
+        
+            % Unaffected before local region.
+            if first >= 1
+                Qw(1:first,:) = Pw(1:first,:);
+            end
+        
+            % Updated local region.
+            for k = 1:(size(temp,1)-2)
+                dst = first + k;
+                if dst >= 1 && dst <= size(Qw,1)
+                    Qw(dst,:) = temp(k+1,:);
+                end
+            end
+        
+            % Unaffected after local region.
+            srcStart = last + 2;   % MATLAB index in old Pw
+            dstStart = srcStart - 1;
+            if srcStart <= size(Pw,1)
+                Qw(dstStart:end,:) = Pw(srcStart:end,:);
+            end
+        
+            % Remove one copy of u from the knot vector.
+            removeIdx = hits(end);
+            Uout = U;
+            Uout(removeIdx) = [];
+        
+            if any(diff(Uout) < -1e-14)
+                ok = false;
+                return;
+            end
+        
+            ok = true;
+        end
+
+        function [Qw, Uq] = curveKnotInsertHomogeneous(p, U, Pw, u, r)
+        %CURVEKNOTINSERTHOMOGENEOUS Exact homogeneous curve knot insertion.
+        % Implements Piegl & Tiller Algorithm A5.1, CurveKnotIns.
+        %
+        % Inputs:
+        %   p  degree
+        %   U  knot vector
+        %   Pw homogeneous control points [n+1 x dim]
+        %   u  knot to insert
+        %   r  number of insertions
+        %
+        % Outputs:
+        %   Qw new homogeneous control points
+        %   Uq new knot vector
+        
+            if nargin < 5 || isempty(r), r = 1; end
+            r = floor(r);
+        
+            if r < 0
+                error('NURBSCurve:curveKnotInsertHomogeneous', ...
+                    'r must be a nonnegative integer.');
+            end
+        
+            U = U(:).';
+        
+            if r == 0
+                Qw = Pw;
+                Uq = U;
+                return;
+            end
+        
+            n  = size(Pw,1) - 1;
+            mp = n + p + 1;
+        
+            % FindSpan in this codebase returns a 1-based MATLAB span.
+            k1 = geom.BasisFunctions.FindSpan(n, p, u, U);
+            k  = k1 - 1;   % book zero-based span
+        
+            s = sum(abs(U - u) < 1e-12);
+        
+            if s + r > p
+                error('NURBSCurve:curveKnotInsertHomogeneous', ...
+                    'Cannot insert knot: multiplicity s+r exceeds degree p.');
+            end
+        
+            nq = n + r;
+        
+            Uq = zeros(1, mp + r + 1);
+            Qw = zeros(nq + 1, size(Pw,2));
+        
+            % Load new knot vector.
+            for i = 0:k
+                Uq(i+1) = U(i+1);
+            end
+        
+            for i = 1:r
+                Uq(k+i+1) = u;
+            end
+        
+            for i = k+1:mp
+                Uq(i+r+1) = U(i+1);
+            end
+        
+            % Save unaltered control points.
+            for i = 0:k-p
+                Qw(i+1,:) = Pw(i+1,:);
+            end
+        
+            for i = k-s:n
+                Qw(i+r+1,:) = Pw(i+1,:);
+            end
+        
+            % Local affected control points.
+            Rw = zeros(p-s+1, size(Pw,2));
+            for i = 0:p-s
+                Rw(i+1,:) = Pw(k-p+i+1,:);
+            end
+        
+            % Insert knot r times.
+            L = 0;
+            for j = 1:r
+                L = k - p + j;
+        
+                for i = 0:p-j-s
+                    denom = U(i+k+2) - U(L+i+1);
+                    if abs(denom) < 1e-14
+                        alpha = 0.0;
+                    else
+                        alpha = (u - U(L+i+1)) / denom;
+                    end
+        
+                    Rw(i+1,:) = alpha * Rw(i+2,:) + ...
+                                (1.0 - alpha) * Rw(i+1,:);
+                end
+        
+                Qw(L+1,:) = Rw(1,:);
+                Qw(k+r-j-s+1,:) = Rw(p-j-s+1,:);
+            end
+        
+            % Load remaining control points.
+            for i = L+1:k-s-1
+                Qw(i+1,:) = Rw(i-L+1,:);
+            end
+        end
+
         function PwElev = elevateBezierHomogeneous(Pw, p, t)
             ph = p + t;
             PwElev = zeros(ph+1, size(Pw,2));
@@ -1050,36 +1432,96 @@ classdef NURBSCurve < handle
             end
         end
 
-        function [PwRed, maxErr] = reduceBezierHomogeneousLSQ(Pw)
+        function [Qw, maxErr] = reduceBezierHomogeneousExact(Pw, tol)
+        %REDUCEBEZIERHOMOGENEOUSEXACT Exact/tolerance Bezier degree reduction.
+        %
+        % Reduces a Bezier control polygon from degree p to p-1 using the
+        % degree-elevation identities in reverse.
+        %
+        % If the control polygon is not reducible within tol, this errors.
+        
+            if nargin < 2 || isempty(tol), tol = 1e-10; end
+        
             p = size(Pw,1) - 1;
+            dim = size(Pw,2);
+        
             if p < 1
-                error('NURBSCurve:reduceBezierHomogeneousLSQ', 'Bezier degree must be at least 1.');
+                error('NURBSCurve:reduceBezierHomogeneousExact', ...
+                    'Bezier degree must be at least 1.');
             end
-
-            ph = p - 1;
-
-            E = zeros(p+1, ph+1);
-            E(1,1) = 1;
-            E(end,end) = 1;
-            for i = 1:p-1
-                alpha = i / p;
-                E(i+1, i)   = alpha;
-                E(i+1, i+1) = 1 - alpha;
+        
+            q = p - 1;
+            Qw = zeros(q+1, dim);
+        
+            Qw(1,:)   = Pw(1,:);
+            Qw(end,:) = Pw(end,:);
+        
+            if p == 1
+                maxErr = 0;
+                return;
             end
-
-            PwRed = zeros(ph+1, size(Pw,2));
-            PwRed(1,:)   = Pw(1,:);
-            PwRed(end,:) = Pw(end,:);
-
-            if ph > 1
-                A = E(:,2:end-1);
-                rhs = Pw - E(:,1)*PwRed(1,:) - E(:,end)*PwRed(end,:);
-                X = A \ rhs;
-                PwRed(2:end-1,:) = X;
+        
+            if mod(p,2) == 1
+                % Odd p: both recurrences compute the same middle reduced point.
+                r = (p - 1) / 2;
+        
+                Qleft = zeros(q+1, dim);
+                Qright = zeros(q+1, dim);
+                Qleft(1,:) = Pw(1,:);
+                Qright(end,:) = Pw(end,:);
+        
+                % Left recurrence.
+                for i = 1:r
+                    alpha = i / p;
+                    Qleft(i+1,:) = (Pw(i+1,:) - alpha * Qleft(i,:)) / (1 - alpha);
+                end
+        
+                % Right recurrence.
+                for i = p-1:-1:r+1
+                    alpha = i / p;
+                    Qright(i,:) = (Pw(i+1,:) - (1 - alpha) * Qright(i+1,:)) / alpha;
+                end
+        
+                midErr = norm(Qleft(r+1,:) - Qright(r+1,:));
+                maxErr = midErr;
+        
+                if midErr > tol
+                    error('NURBSCurve:reduceBezierHomogeneousExact', ...
+                        'Bezier segment is not degree-reducible: %.3e > %.3e.', ...
+                        midErr, tol);
+                end
+        
+                Qw(1:r+1,:) = Qleft(1:r+1,:);
+                Qw(r+2:end,:) = Qright(r+2:end,:);
+        
+            else
+                % Even p: left and right recurrences meet through a middle
+                % original Bezier point consistency check.
+                r = p / 2;
+        
+                % Left recurrence computes Q_1 ... Q_{r-1}.
+                for i = 1:r-1
+                    alpha = i / p;
+                    Qw(i+1,:) = (Pw(i+1,:) - alpha * Qw(i,:)) / (1 - alpha);
+                end
+        
+                % Right recurrence computes Q_{p-2} ... Q_r.
+                for i = p-1:-1:r+1
+                    alpha = i / p;
+                    Qw(i,:) = (Pw(i+1,:) - (1 - alpha) * Qw(i+1,:)) / alpha;
+                end
+        
+                alpha = r / p;
+                Pmid = alpha * Qw(r,:) + (1 - alpha) * Qw(r+1,:);
+                midErr = norm(Pw(r+1,:) - Pmid);
+                maxErr = midErr;
+        
+                if midErr > tol
+                    error('NURBSCurve:reduceBezierHomogeneousExact', ...
+                        'Bezier segment is not degree-reducible: %.3e > %.3e.', ...
+                        midErr, tol);
+                end
             end
-
-            PwElev = E * PwRed;
-            maxErr = max(vecnorm(Pw - PwElev, 2, 2));
         end
 
         function us = validationParams(U1, U2, nSample)
@@ -1158,115 +1600,8 @@ classdef NURBSCurve < handle
 
     methods (Access = private)
         function C2 = insertKnotOnce(obj, u)
-        % Exact single knot insertion.
-            p  = obj.p;
-            U  = obj.U;
-            Pw = obj.Pw;
-            n  = obj.n;
-
-            u = obj.clamp(u);
-            span = geom.BasisFunctions.FindSpan(n, p, u, U);
-            s = obj.knotMultiplicity(u, 1e-12);
-
-            if s >= p
-                C2 = geom.NURBSCurve(obj.P, obj.p, obj.U, obj.W);
-                return;
-            end
-
-            Up = zeros(1, numel(U) + 1);
-            Up(1:span) = U(1:span);
-            Up(span+1) = u;
-            Up(span+2:end) = U(span+1:end);
-
-            Qw = zeros(size(Pw,1) + 1, 4);
-
-            Qw(1:span-p, :) = Pw(1:span-p, :);
-            Qw(span-s+1:end, :) = Pw(span-s:end, :);
-
-            for j = (span-p+1):(span-s)
-                denom = U(j+p) - U(j);
-                if abs(denom) < 1e-14
-                    alpha = 0.0;
-                else
-                    alpha = (u - U(j)) / denom;
-                end
-                Qw(j,:) = alpha * Pw(j,:) + (1-alpha) * Pw(j-1,:);
-            end
-
-            if any(diff(Up) < -1e-14)
-                error('NURBSCurve:insertKnotOnce', 'Internal error: generated knot vector is not nondecreasing.');
-            end
-
-            W2 = Qw(:,4);
-            if any(W2 <= 0)
-                error('NURBSCurve:insertKnotOnce', 'Knot insertion produced nonpositive weights.');
-            end
-
-            P2 = Qw(:,1:3) ./ W2;
-            C2 = geom.NURBSCurve(P2, p, Up, W2);
-        end
-
-        function [ok, Ccand, maxErr] = tryRemoveOneKnot(obj, u, tol, nSample)
-            ok = false;
-            Ccand = obj;
-            maxErr = inf;
-
-            tolK = 1e-12;
-            idx = find(abs(obj.U - u) < tolK, 1, 'first');
-            if isempty(idx)
-                return;
-            end
-
-            if idx <= obj.p+1 || idx >= numel(obj.U)-obj.p
-                return;
-            end
-
-            Ucand = obj.U;
-            Ucand(idx) = [];
-
-            n2 = numel(Ucand) - obj.p - 2;
-            if n2 < obj.p
-                return;
-            end
-
-            g = geom.NURBSCurve.grevilleFromKnotVector(Ucand, obj.p);
-            H = obj.evaluateHomogeneous(g);
-
-            A = zeros(n2+1, n2+1);
-            for rr = 1:n2+1
-                span = geom.BasisFunctions.FindSpan(n2, obj.p, g(rr), Ucand);
-                N = geom.BasisFunctions.BasisFuns(span, g(rr), obj.p, Ucand);
-
-                cols = (span-obj.p):span;
-                if cols(1) < 1 || cols(end) > (n2+1)
-                    return;
-                end
-
-                A(rr, cols) = N;
-            end
-
-            if size(A,1) ~= size(A,2)
-                return;
-            end
-            if rcond(A) < 1e-13
-                return;
-            end
-
-            Qw = A \ H;
-            if any(Qw(:,4) <= 0)
-                return;
-            end
-
-            Q = Qw(:,1:3) ./ Qw(:,4);
-            Ctest = geom.NURBSCurve(Q, obj.p, Ucand, Qw(:,4));
-
-            us = geom.NURBSCurve.validationParams(obj.U, Ucand, nSample);
-            maxErr = max(vecnorm(obj.evaluate(us) - Ctest.evaluate(us), 2, 2));
-
-            if maxErr <= tol
-                ok = true;
-                Ccand = Ctest;
-            end
+        %INSERTKNOTONCE Compatibility wrapper.
+            C2 = obj.insertKnot(u, 1);
         end
 
         function u = clamp(obj, u)

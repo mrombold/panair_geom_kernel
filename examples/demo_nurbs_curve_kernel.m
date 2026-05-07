@@ -256,6 +256,17 @@ catch ME
     fprintf('  Split/Bezier section failed: %s\n', ME.message);
 end
 
+usL = linspace(CL.domain(1), CL.domain(2), 25);
+usR = linspace(CR.domain(1), CR.domain(2), 25);
+
+errL = max(vecnorm(C.evaluate(usL) - CL.evaluate(usL), 2, 2));
+errR = max(vecnorm(C.evaluate(usR) - CR.evaluate(usR), 2, 2));
+
+fprintf('  split left preservation error  = %.3e\n', errL);
+fprintf('  split right preservation error = %.3e\n', errR);
+fprintf('  left domain  = [%.6f %.6f]\n', CL.domain);
+fprintf('  right domain = [%.6f %.6f]\n', CR.domain);
+
 %% ======================================================================
 %  8. GLOBAL INTERPOLATION
 %% ======================================================================

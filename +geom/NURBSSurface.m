@@ -1094,74 +1094,134 @@ classdef NURBSSurface < handle
             S2.trimTolerance = obj.trimTolerance;
         end
 
+
         function [S_lo, S_hi] = splitU(obj, u0)
+        %SPLITU Exact surface split in U by full-multiplicity knot insertion.
+        
             tol = 1e-12;
             u0 = obj.clampU(u0);
-
+        
             if u0 <= obj.domainU(1) + tol || u0 >= obj.domainU(2) - tol
-                error('NURBSSurface:splitU', 'u0 must lie strictly inside the active U domain.');
+                error('NURBSSurface:splitU', ...
+                    'u0 must lie strictly inside the active U domain.');
             end
-
+        
             s = sum(abs(obj.U - u0) < tol);
             if s > obj.p
-                error('NURBSSurface:splitU', 'Split knot multiplicity exceeds degree.');
+                error('NURBSSurface:splitU', ...
+                    'Split knot multiplicity exceeds degree.');
             end
-
+        
             reps = obj.p - s;
             if reps > 0
                 S_ref = obj.refine(repmat(u0, 1, reps), []);
             else
-                S_ref = obj;
+                S_ref = obj.copySurfaceOnly();
             end
-
+        
             U2 = S_ref.U;
-            first = find(abs(U2 - u0) < tol, 1, 'first');
-            last  = find(abs(U2 - u0) < tol, 1, 'last');
-
-            if isempty(first) || isempty(last)
-                error('NURBSSurface:splitU', 'Failed to create split knot.');
+            idx = find(abs(U2 - u0) < tol);
+        
+            if numel(idx) < obj.p
+                error('NURBSSurface:splitU', ...
+                    'Failed to create full-multiplicity split knot.');
             end
-
-            cp_split = last - obj.p;
-
-            P_lo = S_ref.P(1:cp_split, :, :);
-            W_lo = S_ref.W(1:cp_split, :);
+        
+            first = idx(1);
+            last  = idx(end);
+        
+            % splitU
+            nLo = last - obj.p;
+            
+            P_lo = S_ref.P(1:nLo, :, :);
+            W_lo = S_ref.W(1:nLo, :);
             U_lo = [U2(1:last), u0];
-            U_lo = geom.NURBSSurface.normalizeKnotVector(U_lo);
-
-            P_hi = S_ref.P(cp_split:end, :, :);
-            W_hi = S_ref.W(cp_split:end, :);
+            
+            P_hi = S_ref.P(nLo:end, :, :);
+            W_hi = S_ref.W(nLo:end, :);
             U_hi = [u0, U2(first:end)];
-            U_hi = geom.NURBSSurface.normalizeKnotVector(U_hi);
-
+        
+            % Clamp child knot vectors at the split while keeping absolute domains.
+            U_lo(end-obj.p:end) = u0;
+            U_hi(1:obj.p+1) = u0;
+        
             S_lo = geom.NURBSSurface(P_lo, obj.p, obj.q, U_lo, obj.V, W_lo);
             S_hi = geom.NURBSSurface(P_hi, obj.p, obj.q, U_hi, obj.V, W_hi);
-
-            if obj.isTrimmed()
-                [outerLo, outerHi] = geom.NURBSSurface.splitTrimLoopsU(obj.trimOuterLoops, u0);
-                [innerLo, innerHi] = geom.NURBSSurface.splitTrimLoopsU(obj.trimInnerLoops, u0);
-
-                S_lo.trimOuterLoops = outerLo;
-                S_lo.trimInnerLoops = innerLo;
-                S_hi.trimOuterLoops = outerHi;
-                S_hi.trimInnerLoops = innerHi;
-                S_lo.trimTolerance = obj.trimTolerance;
-                S_hi.trimTolerance = obj.trimTolerance;
-            end
+        
+            % Conservative trim handling: preserve existing trim metadata.
+            % This does not do topological trim splitting.
+            S_lo.trimOuterLoops = obj.trimOuterLoops;
+            S_lo.trimInnerLoops = obj.trimInnerLoops;
+            S_lo.trimTolerance  = obj.trimTolerance;
+        
+            S_hi.trimOuterLoops = obj.trimOuterLoops;
+            S_hi.trimInnerLoops = obj.trimInnerLoops;
+            S_hi.trimTolerance  = obj.trimTolerance;
         end
 
         function [S_lo, S_hi] = splitV(obj, v0)
-            St = obj.swapUV();
-            [A, B] = St.splitU(v0);
-            S_lo = A.swapUV();
-            S_hi = B.swapUV();
-
+        %SPLITV Exact surface split in V by full-multiplicity knot insertion.
+        
+            tol = 1e-12;
+            v0 = obj.clampV(v0);
+        
+            if v0 <= obj.domainV(1) + tol || v0 >= obj.domainV(2) - tol
+                error('NURBSSurface:splitV', ...
+                    'v0 must lie strictly inside the active V domain.');
+            end
+        
+            s = sum(abs(obj.V - v0) < tol);
+            if s > obj.q
+                error('NURBSSurface:splitV', ...
+                    'Split knot multiplicity exceeds degree.');
+            end
+        
+            reps = obj.q - s;
+            if reps > 0
+                S_ref = obj.refine([], repmat(v0, 1, reps));
+            else
+                S_ref = obj.copySurfaceOnly();
+            end
+        
+            V2 = S_ref.V;
+            idx = find(abs(V2 - v0) < tol);
+        
+            if numel(idx) < obj.q
+                error('NURBSSurface:splitV', ...
+                    'Failed to create full-multiplicity split knot.');
+            end
+        
+            first = idx(1);
+            last  = idx(end);
+        
+            % Number of control points on low side.
+            % splitV
+            mLo = last - obj.q;
+            
+            P_lo = S_ref.P(:, 1:mLo, :);
+            W_lo = S_ref.W(:, 1:mLo);
+            V_lo = [V2(1:last), v0];
+            
+            P_hi = S_ref.P(:, mLo:end, :);
+            W_hi = S_ref.W(:, mLo:end);
+            V_hi = [v0, V2(first:end)];
+        
+            % Clamp child knot vectors at the split while keeping absolute domains.
+            V_lo(end-obj.q:end) = v0;
+            V_hi(1:obj.q+1) = v0;
+        
+            S_lo = geom.NURBSSurface(P_lo, obj.p, obj.q, obj.U, V_lo, W_lo);
+            S_hi = geom.NURBSSurface(P_hi, obj.p, obj.q, obj.U, V_hi, W_hi);
+        
+            % Conservative trim handling: preserve existing trim metadata.
+            % This does not do topological trim splitting.
             S_lo.trimOuterLoops = obj.trimOuterLoops;
             S_lo.trimInnerLoops = obj.trimInnerLoops;
+            S_lo.trimTolerance  = obj.trimTolerance;
+        
             S_hi.trimOuterLoops = obj.trimOuterLoops;
             S_hi.trimInnerLoops = obj.trimInnerLoops;
-            S_lo.trimTolerance = obj.trimTolerance;
-            S_hi.trimTolerance = obj.trimTolerance;
+            S_hi.trimTolerance  = obj.trimTolerance;
         end
 
         function C = isoCurveU(obj, v0)
@@ -1208,44 +1268,45 @@ classdef NURBSSurface < handle
             C = geom.NURBSCurve(P2, obj.q, obj.V, W2);
         end
 
+
         function Ssub = extractUV(obj, urange, vrange)
+        %EXTRACTUV Exact rectangular subpatch extraction using absolute UV splits.
+        
             ua = urange(1);
             ub = urange(2);
             va = vrange(1);
             vb = vrange(2);
-
+        
             if ~(ua < ub && va < vb)
-                error('NURBSSurface:extractUV', 'Require ua < ub and va < vb.');
+                error('NURBSSurface:extractUV', ...
+                    'Require ua < ub and va < vb.');
             end
-
+        
+            tol = 1e-12;
+        
             ua = obj.clampU(ua);
             ub = obj.clampU(ub);
             va = obj.clampV(va);
             vb = obj.clampV(vb);
-
-            Swork = obj;
-            tol = 1e-12;
-
+        
+            Swork = obj.copySurfaceOnly();
+        
             if ua > Swork.domainU(1) + tol
                 [~, Swork] = Swork.splitU(ua);
             end
-
-            if ub < obj.domainU(2) - tol
-                ub_local = (ub - ua) / (obj.domainU(2) - ua);
-                ub_local = max(0, min(1, ub_local));
-                [Swork, ~] = Swork.splitU(ub_local);
+        
+            if ub < Swork.domainU(2) - tol
+                [Swork, ~] = Swork.splitU(ub);
             end
-
+        
             if va > Swork.domainV(1) + tol
                 [~, Swork] = Swork.splitV(va);
             end
-
-            if vb < obj.domainV(2) - tol
-                vb_local = (vb - va) / (obj.domainV(2) - va);
-                vb_local = max(0, min(1, vb_local));
-                [Swork, ~] = Swork.splitV(vb_local);
+        
+            if vb < Swork.domainV(2) - tol
+                [Swork, ~] = Swork.splitV(vb);
             end
-
+        
             Ssub = Swork;
         end
 
@@ -1904,34 +1965,6 @@ classdef NURBSSurface < handle
             end
         end
 
-        function [leftLoops, rightLoops] = splitTrimLoopsU(loops, u0)
-            % Practical placeholder: preserve loops on both children by
-            % renormalizing coordinates. This is conservative and useful for
-            % demos / masking, though it is not a full topological trim split.
-            leftLoops = {};
-            rightLoops = {};
-            for k = 1:numel(loops)
-                uv = loops{k};
-                uvL = uv;
-                uvR = uv;
-                uvL(:,1) = min(uvL(:,1), u0);
-                uvR(:,1) = max(uvR(:,1), u0);
-
-                % map to [0,1]
-                if u0 > 0
-                    uvL(:,1) = uvL(:,1) / u0;
-                else
-                    uvL(:,1) = 0;
-                end
-                if (1-u0) > 0
-                    uvR(:,1) = (uvR(:,1) - u0) / (1-u0);
-                else
-                    uvR(:,1) = 0;
-                end
-                leftLoops{end+1} = uvL; %#ok<AGROW>
-                rightLoops{end+1} = uvR; %#ok<AGROW>
-            end
-        end
 
         function S = globalInterpNet(Q, p, q, methodU, methodV)
             if nargin < 4 || isempty(methodU), methodU = 'centripetal'; end
@@ -2169,164 +2202,478 @@ classdef NURBSSurface < handle
             S = geom.NURBSSurface(P, pU, q, U, V, W);
         end
 
+
         function S = coons(Cu0, Cu1, Cv0, Cv1, p, q, nu, nv)
-            if nargin < 5 || isempty(p), p = 3; end
-            if nargin < 6 || isempty(q), q = 3; end
-            if nargin < 7 || isempty(nu), nu = 21; end
-            if nargin < 8 || isempty(nv), nv = 21; end
-
-            P00 = Cu0.evaluate(Cu0.domain(1));
-            P10 = Cu0.evaluate(Cu0.domain(2));
-            P01 = Cu1.evaluate(Cu1.domain(1));
-            P11 = Cu1.evaluate(Cu1.domain(2));
-
-            Q00 = Cv0.evaluate(Cv0.domain(1));
-            Q01 = Cv0.evaluate(Cv0.domain(2));
-            Q10 = Cv1.evaluate(Cv1.domain(1));
-            Q11 = Cv1.evaluate(Cv1.domain(2));
-
-            if max([norm(P00-Q00), norm(P01-Q01), norm(P10-Q10), norm(P11-Q11)]) > 1e-6
+        %COONS Exact tensor-product Coons patch for polynomial B-spline boundaries.
+        %
+        % Boundary convention:
+        %   Cu0(u) = S(u,0)
+        %   Cu1(u) = S(u,1)
+        %   Cv0(v) = S(0,v)
+        %   Cv1(v) = S(1,v)
+        %
+        % This replaces the previous sampled/interpolated Coons implementation.
+        %
+        % Notes:
+        %   - nu, nv are accepted for backward compatibility but unused.
+        %   - This exact control-net form assumes non-rational / unit-weight
+        %     boundary curves after compatibility. General rational Coons blending
+        %     is not just P = Su + Sv - Sb in Cartesian control-net space.
+        
+            %#ok<INUSD> nu nv
+        
+            if nargin < 5 || isempty(p), p = max(Cu0.p, Cu1.p); end
+            if nargin < 6 || isempty(q), q = max(Cv0.p, Cv1.p); end
+        
+            tol = 1e-10;
+        
+            % Corner consistency.
+            P00a = Cu0.evaluate(Cu0.domain(1));
+            P10a = Cu0.evaluate(Cu0.domain(2));
+            P01a = Cu1.evaluate(Cu1.domain(1));
+            P11a = Cu1.evaluate(Cu1.domain(2));
+        
+            P00b = Cv0.evaluate(Cv0.domain(1));
+            P01b = Cv0.evaluate(Cv0.domain(2));
+            P10b = Cv1.evaluate(Cv1.domain(1));
+            P11b = Cv1.evaluate(Cv1.domain(2));
+        
+            if max([norm(P00a-P00b), norm(P10a-P10b), ...
+                    norm(P01a-P01b), norm(P11a-P11b)]) > 1e-7
                 error('NURBSSurface:coons', ...
                     'Boundary curve corners are inconsistent.');
             end
-
-            ug = linspace(0,1,nu);
-            vg = linspace(0,1,nv);
-            Q = zeros(nu, nv, 3);
-
-            for i = 1:nu
-                u = ug(i);
-
-                Pu0 = Cu0.evaluate(Cu0.domain(1) + u*(Cu0.domain(2)-Cu0.domain(1)));
-                Pu1 = Cu1.evaluate(Cu1.domain(1) + u*(Cu1.domain(2)-Cu1.domain(1)));
-
-                for j = 1:nv
-                    v = vg(j);
-
-                    Pv0 = Cv0.evaluate(Cv0.domain(1) + v*(Cv0.domain(2)-Cv0.domain(1)));
-                    Pv1 = Cv1.evaluate(Cv1.domain(1) + v*(Cv1.domain(2)-Cv1.domain(1)));
-
-                    Suv = (1-v) * Pu0 + v * Pu1;
-                    Svv = (1-u) * Pv0 + u * Pv1;
-                    Sbil = (1-u)*(1-v)*P00 + u*(1-v)*P10 + (1-u)*v*P01 + u*v*P11;
-
-                    Q(i,j,:) = Suv + Svv - Sbil;
+        
+            % Make opposite boundary pairs compatible.
+            [Cu, pU, U] = geom.NURBSSurface.makeCompatibleCurves({Cu0, Cu1});
+            [Cv, qV, V] = geom.NURBSSurface.makeCompatibleCurves({Cv0, Cv1});
+        
+            Cu0c = Cu{1};
+            Cu1c = Cu{2};
+            Cv0c = Cv{1};
+            Cv1c = Cv{2};
+        
+            % Optional requested degree elevation.
+            if p > pU
+                Cu0c = Cu0c.elevate(p - pU);
+                Cu1c = Cu1c.elevate(p - pU);
+                [Cu, pU, U] = geom.NURBSSurface.makeCompatibleCurves({Cu0c, Cu1c});
+                Cu0c = Cu{1};
+                Cu1c = Cu{2};
+            else
+                p = pU;
+            end
+        
+            if q > qV
+                Cv0c = Cv0c.elevate(q - qV);
+                Cv1c = Cv1c.elevate(q - qV);
+                [Cv, qV, V] = geom.NURBSSurface.makeCompatibleCurves({Cv0c, Cv1c});
+                Cv0c = Cv{1};
+                Cv1c = Cv{2};
+            else
+                q = qV;
+            end
+        
+            % This simple exact Coons construction is polynomial.
+            if any(abs(Cu0c.W - 1) > tol) || any(abs(Cu1c.W - 1) > tol) || ...
+               any(abs(Cv0c.W - 1) > tol) || any(abs(Cv1c.W - 1) > tol)
+                error('NURBSSurface:coons', ...
+                    ['Exact control-net Coons currently supports unit-weight ', ...
+                     'boundary curves only. Rational boundaries need a separate ', ...
+                     'product-space rational Coons implementation.']);
+            end
+        
+            nuCtrl = size(Cu0c.P,1);
+            nvCtrl = size(Cv0c.P,1);
+        
+            % Corner points.
+            P00 = P00a;
+            P10 = P10a;
+            P01 = P01a;
+            P11 = P11a;
+        
+            % Tensor-product Coons control net:
+            %
+            % S(u,v) = (1-v) Cu0(u) + v Cu1(u)
+            %        + (1-u) Cv0(v) + u Cv1(v)
+            %        - bilinear_corners(u,v)
+            %
+            Pnet = zeros(nuCtrl, nvCtrl, 3);
+        
+            for i = 1:nuCtrl
+                uhat = grevilleLocal(i, p, U);
+        
+                for j = 1:nvCtrl
+                    vhat = grevilleLocal(j, q, V);
+        
+                    Pu0 = reshape(Cu0c.P(i,:), 1, 3);
+                    Pu1 = reshape(Cu1c.P(i,:), 1, 3);
+                    Pv0 = reshape(Cv0c.P(j,:), 1, 3);
+                    Pv1 = reshape(Cv1c.P(j,:), 1, 3);
+        
+                    Su = (1 - vhat) * Pu0 + vhat * Pu1;
+                    Sv = (1 - uhat) * Pv0 + uhat * Pv1;
+        
+                    Sb = (1 - uhat) * (1 - vhat) * P00 + ...
+                          uhat      * (1 - vhat) * P10 + ...
+                         (1 - uhat) * vhat       * P01 + ...
+                          uhat      * vhat       * P11;
+        
+                    Pnet(i,j,:) = reshape(Su + Sv - Sb, 1, 1, 3);
                 end
             end
-
-            S = geom.NURBSSurface.globalInterpNet(Q, p, q, 'chord', 'chord');
+        
+            W = ones(nuCtrl, nvCtrl);
+            S = geom.NURBSSurface(Pnet, p, q, U, V, W);
+        
+            function g = grevilleLocal(ii, deg, K)
+                % ii is MATLAB 1-based control-point index.
+                % For clamped Bezier this gives the Bernstein control-position
+                % parameter, and for general B-splines gives the Greville abscissa.
+                if deg == 0
+                    g = 0.0;
+                else
+                    g = sum(K(ii+1:ii+deg)) / deg;
+                end
+            end
         end
 
         function S = gordon(profileCurves, guideCurves, p, q, nu, nv)
+        %GORDON Exact Gordon surface, Algorithm A10.3-style.
+        %
+        % profileCurves: curves running in u-direction, placed at v stations
+        % guideCurves:   curves running in v-direction, placed at u stations
+        %
+        % S = L1 + L2 - T
+        %
+        % nu,nv are accepted for backward compatibility but unused.
+        
+            %#ok<INUSD> nu nv
+        
             if nargin < 3 || isempty(p), p = 3; end
             if nargin < 4 || isempty(q), q = 3; end
-            if nargin < 5 || isempty(nu), nu = 25; end
-            if nargin < 6 || isempty(nv), nv = 25; end
-
+        
             if ~iscell(profileCurves), profileCurves = {profileCurves}; end
-            if ~iscell(guideCurves), guideCurves = {guideCurves}; end
-            if numel(profileCurves) < 2 || numel(guideCurves) < 2
+            if ~iscell(guideCurves),   guideCurves   = {guideCurves};   end
+        
+            nProf = numel(profileCurves);
+            nGuid = numel(guideCurves);
+        
+            if nProf < 2 || nGuid < 2
                 error('NURBSSurface:gordon', ...
                     'Need at least two profile curves and two guide curves.');
             end
-
-            Sp = geom.NURBSSurface.loft(profileCurves, q, 'centripetal');
-            Sg = geom.NURBSSurface.loft(guideCurves, p, 'centripetal').swapUV();
-
-            vp = linspace(0,1,numel(profileCurves));
-            ug = linspace(0,1,numel(guideCurves));
-            X = zeros(numel(ug), numel(vp), 3);
-
-            for i = 1:numel(ug)
-                for j = 1:numel(vp)
-                    X(i,j,:) = Sp.evaluate(ug(i), vp(j));
-                end
+        
+            if p > nGuid - 1
+                error('NURBSSurface:gordon', ...
+                    'Requested p=%d exceeds number of guide stations-1=%d.', p, nGuid-1);
             end
-
-            Si = geom.NURBSSurface.globalInterpNet(X, p, q, 'uniform', 'uniform');
-
-            ugrid = linspace(0,1,nu);
-            vgrid = linspace(0,1,nv);
-            Q = zeros(nu, nv, 3);
-
-            for i = 1:nu
-                for j = 1:nv
-                    Pp = Sp.evaluate(ugrid(i), vgrid(j));
-                    Pg = Sg.evaluate(ugrid(i), vgrid(j));
-                    Pi = Si.evaluate(ugrid(i), vgrid(j));
-                    Q(i,j,:) = Pp + Pg - Pi;
-                end
+            if q > nProf - 1
+                error('NURBSSurface:gordon', ...
+                    'Requested q=%d exceeds number of profile stations-1=%d.', q, nProf-1);
             end
-
-            S = geom.NURBSSurface.globalInterpNet(Q, p, q, 'chord', 'chord');
-        end
-
-        function S = multiGordon(profileFamilies, guideFamilies, weights, p, q, nu, nv)
-        % Higher-order multi-network blending variant.
-        %
-        % profileFamilies, guideFamilies are cell arrays of curve-network
-        % pairs. Each pair is blended Gordon-style, then combined with weights.
-            if nargin < 3 || isempty(weights)
-                weights = ones(numel(profileFamilies),1);
-            end
-            if nargin < 4 || isempty(p), p = 3; end
-            if nargin < 5 || isempty(q), q = 3; end
-            if nargin < 6 || isempty(nu), nu = 25; end
-            if nargin < 7 || isempty(nv), nv = 25; end
-
-            weights = weights(:);
-            nfam = numel(profileFamilies);
-            if numel(guideFamilies) ~= nfam || numel(weights) ~= nfam
-                error('NURBSSurface:multiGordon', ...
-                    'Families and weights must have matching lengths.');
-            end
-
-            Sfam = cell(nfam,1);
-            for k = 1:nfam
-                Sfam{k} = geom.NURBSSurface.gordon( ...
-                    profileFamilies{k}, guideFamilies{k}, p, q, nu, nv);
-            end
-
-            ug = linspace(0,1,nu);
-            vg = linspace(0,1,nv);
-            Q = zeros(nu, nv, 3);
-
-            ws = sum(weights);
-            if abs(ws) < eps
-                error('NURBSSurface:multiGordon', 'Weights sum to zero.');
-            end
-
-            for i = 1:nu
-                for j = 1:nv
-                    acc = zeros(1,3);
-                    for k = 1:nfam
-                        acc = acc + weights(k) * Sfam{k}.evaluate(ug(i), vg(j));
+        
+            tol = 1e-9;
+        
+            % Uniform Gordon network parameters.
+            uPar = linspace(0, 1, nGuid).';
+            vPar = linspace(0, 1, nProf).';
+        
+            % L1(u,v): loft profile curves in v direction.
+            L1 = geom.NURBSSurface.loft(profileCurves, q, 'uniform', vPar);
+        
+            % L2(u,v): loft guide curves in u direction, then swap.
+            L2 = geom.NURBSSurface.loft(guideCurves, p, 'uniform', uPar).swapUV();
+        
+            % Intersection net T(u,v).
+            X = zeros(nGuid, nProf, 3);
+        
+            for i = 1:nGuid
+                for j = 1:nProf
+                    Pi = profileCurves{j}.evaluate( ...
+                        map01ToDomain(uPar(i), profileCurves{j}.domain));
+        
+                    Pj = guideCurves{i}.evaluate( ...
+                        map01ToDomain(vPar(j), guideCurves{i}.domain));
+        
+                    if norm(Pi - Pj) > tol
+                        error('NURBSSurface:gordon', ...
+                            'Curve network mismatch at guide %d, profile %d: err = %.3e.', ...
+                            i, j, norm(Pi - Pj));
                     end
-                    Q(i,j,:) = acc / ws;
+        
+                    X(i,j,:) = reshape(0.5*(Pi + Pj), 1, 1, 3);
                 end
             end
-
-            S = geom.NURBSSurface.globalInterpNet(Q, p, q, 'chord', 'chord');
+        
+            T = interpSurfaceNetWithParams(X, p, q, uPar, vPar);
+        
+            % Final common degree.
+            pFinal = max([L1.p, L2.p, T.p]);
+            qFinal = max([L1.q, L2.q, T.q]);
+        
+            L1 = elevateTo(L1, pFinal, qFinal);
+            L2 = elevateTo(L2, pFinal, qFinal);
+            T  = elevateTo(T,  pFinal, qFinal);
+        
+            % Merge knot vectors, preserving maximum multiplicities.
+            U = mergeKnotsMaxMult(L1.U, L2.U, T.U, 1e-12);
+            V = mergeKnotsMaxMult(L1.V, L2.V, T.V, 1e-12);
+        
+            L1 = refineToKnots(L1, U, V, 1e-12);
+            L2 = refineToKnots(L2, U, V, 1e-12);
+            T  = refineToKnots(T,  U, V, 1e-12);
+        
+            % This exact control-net addition assumes polynomial/unit weights.
+            if max(abs(L1.W(:)-1)) > tol || max(abs(L2.W(:)-1)) > tol || max(abs(T.W(:)-1)) > tol
+                error('NURBSSurface:gordon', ...
+                    'Exact Gordon control-net blend currently supports unit-weight surfaces only.');
+            end
+        
+            P = L1.P + L2.P - T.P;
+            W = ones(size(P,1), size(P,2));
+        
+            S = geom.NURBSSurface(P, pFinal, qFinal, U, V, W);
+        
+            function t = map01ToDomain(a, dom)
+                t = dom(1) + a*(dom(2)-dom(1));
+            end
+        
+            function Sout = elevateTo(Sin, pp, qq)
+                Sout = Sin;
+                if Sout.p < pp
+                    Sout = Sout.elevateU(pp - Sout.p);
+                end
+                if Sout.q < qq
+                    Sout = Sout.elevateV(qq - Sout.q);
+                end
+            end
+        
+            function Sfit = interpSurfaceNetWithParams(Q, pp, qq, up, vp)
+                nuQ = size(Q,1);
+                nvQ = size(Q,2);
+        
+                Ufit = geom.NURBSCurve.averagingKnotVector(up, pp);
+                Vfit = geom.NURBSCurve.averagingKnotVector(vp, qq);
+        
+                Au = zeros(nuQ, nuQ);
+                for a = 1:nuQ
+                    span = geom.BasisFunctions.FindSpan(nuQ-1, pp, up(a), Ufit);
+                    N = geom.BasisFunctions.BasisFuns(span, up(a), pp, Ufit);
+                    cols = (span-pp):span;
+                    Au(a, cols) = N;
+                end
+        
+                Av = zeros(nvQ, nvQ);
+                for b = 1:nvQ
+                    span = geom.BasisFunctions.FindSpan(nvQ-1, qq, vp(b), Vfit);
+                    N = geom.BasisFunctions.BasisFuns(span, vp(b), qq, Vfit);
+                    cols = (span-qq):span;
+                    Av(b, cols) = N;
+                end
+        
+                Pfit = zeros(nuQ, nvQ, 3);
+        
+                for d = 1:3
+                    Qd = Q(:,:,d);
+                    Pfit(:,:,d) = Au \ Qd / Av.';
+                end
+        
+                Sfit = geom.NURBSSurface(Pfit, pp, qq, Ufit, Vfit, ones(nuQ,nvQ));
+            end
+        
+            function K = mergeKnotsMaxMult(varargin)
+                tolK = varargin{end};
+                knots = varargin(1:end-1);
+        
+                vals = [];
+                for kk = 1:numel(knots)
+                    vals = [vals, knots{kk}(:).']; %#ok<AGROW>
+                end
+                vals = sort(vals);
+        
+                uniqueVals = [];
+                while ~isempty(vals)
+                    v0 = vals(1);
+                    uniqueVals(end+1) = v0; %#ok<AGROW>
+                    vals(abs(vals - v0) < tolK) = [];
+                end
+        
+                K = [];
+                for a = 1:numel(uniqueVals)
+                    v0 = uniqueVals(a);
+                    maxMult = 0;
+                    for kk = 1:numel(knots)
+                        maxMult = max(maxMult, sum(abs(knots{kk} - v0) < tolK));
+                    end
+                    K = [K, repmat(v0, 1, maxMult)]; %#ok<AGROW>
+                end
+            end
+        
+            function Sout = refineToKnots(Sin, Ut, Vt, tolK)
+                Sout = Sin;
+        
+                Xu = [];
+                uInt = unique(Ut);
+                for a = 1:numel(uInt)
+                    val = uInt(a);
+                    if val <= Sout.domainU(1)+tolK || val >= Sout.domainU(2)-tolK
+                        continue;
+                    end
+                    mt = sum(abs(Ut - val) < tolK);
+                    ms = sum(abs(Sout.U - val) < tolK);
+                    if mt > ms
+                        Xu = [Xu, repmat(val, 1, mt-ms)]; %#ok<AGROW>
+                    end
+                end
+        
+                Xv = [];
+                vInt = unique(Vt);
+                for a = 1:numel(vInt)
+                    val = vInt(a);
+                    if val <= Sout.domainV(1)+tolK || val >= Sout.domainV(2)-tolK
+                        continue;
+                    end
+                    mt = sum(abs(Vt - val) < tolK);
+                    ms = sum(abs(Sout.V - val) < tolK);
+                    if mt > ms
+                        Xv = [Xv, repmat(val, 1, mt-ms)]; %#ok<AGROW>
+                    end
+                end
+        
+                Sout = Sout.refine(Xu, Xv);
+            end
         end
+
 
         function S = revolve(C, axisPoint, axisDir, thetaTotal, q, nSections)
-            if nargin < 4 || isempty(thetaTotal), thetaTotal = 2*pi; end
-            if nargin < 5 || isempty(q), q = 3; end
-            if nargin < 6 || isempty(nSections), nSections = 9; end
-
-            axisPoint = axisPoint(:).';
-            axisDir = axisDir(:).';
-            axisDir = axisDir / norm(axisDir);
-
-            th = linspace(0, thetaTotal, nSections);
-            curves = cell(1, nSections);
-
-            for k = 1:nSections
-                T = geom.NURBSSurface.axisRotationTransform(axisPoint, axisDir, th(k));
-                curves{k} = C.transform(T);
+            %REVOLVE Exact rational NURBS surface of revolution.
+            %
+            % Drop-in replacement for the old approximate loft-based revolve.
+            %
+            % Signature keeps q and nSections for backward compatibility, but they
+            % are intentionally unused. The revolution direction is exactly quadratic
+            % rational, per Piegl & Tiller Algorithm A8.1.
+            %
+            % Surface directions:
+            %   u = original curve direction
+            %   v = revolution direction
+        
+            %#ok<INUSD> q nSections
+        
+            if nargin < 4 || isempty(thetaTotal)
+                thetaTotal = 2*pi;
             end
-
-            S = geom.NURBSSurface.loft(curves, q, 'chord');
+        
+            axisPoint = axisPoint(:).';
+            axisDir   = axisDir(:).';
+        
+            if norm(axisDir) < eps
+                error('NURBSSurface:revolve', 'axisDir must be nonzero.');
+            end
+        
+            T = axisDir / norm(axisDir);
+        
+            if abs(thetaTotal) < eps
+                error('NURBSSurface:revolve', 'thetaTotal must be nonzero.');
+            end
+        
+            if abs(thetaTotal) > 2*pi + 1e-12
+                error('NURBSSurface:revolve', ...
+                    'Exact revolve supports |thetaTotal| <= 2*pi.');
+            end
+        
+            sgn = sign(thetaTotal);
+            theta = abs(thetaTotal);
+        
+            % Algorithm A8.1 arc count.
+            if theta <= pi/2 + 1e-12
+                narcs = 1;
+            elseif theta <= pi + 1e-12
+                narcs = 2;
+            elseif theta <= 3*pi/2 + 1e-12
+                narcs = 3;
+            else
+                narcs = 4;
+            end
+        
+            dtheta = sgn * theta / narcs;
+            wm = cos(dtheta / 2);
+        
+            % Quadratic clamped knot vector in revolution direction.
+            switch narcs
+                case 1
+                    V = [0 0 0 1 1 1];
+                case 2
+                    V = [0 0 0 0.5 0.5 1 1 1];
+                case 3
+                    V = [0 0 0 1/3 1/3 2/3 2/3 1 1 1];
+                case 4
+                    V = [0 0 0 0.25 0.25 0.5 0.5 0.75 0.75 1 1 1];
+            end
+        
+            qrev = 2;
+            nCurve = size(C.P, 1);
+            nRev   = 2 * narcs + 1;
+        
+            P = zeros(nCurve, nRev, 3);
+            W = zeros(nCurve, nRev);
+        
+            Pc = C.P;
+            Wc = C.W(:);
+        
+            for j = 1:nCurve
+                Pj = Pc(j,:);
+        
+                % Center of rotation for this control point.
+                O = axisPoint + dot(Pj - axisPoint, T) * T;
+        
+                X = Pj - O;
+                r = norm(X);
+        
+                % Point lies on axis: revolution degenerates to the same point.
+                if r < 1e-14
+                    for k = 1:nRev
+                        P(j,k,:) = reshape(Pj, 1, 1, 3);
+                        W(j,k) = Wc(j);
+                    end
+                    continue;
+                end
+        
+                X = X / r;
+                Y = cross(T, X);
+                Y = Y / norm(Y);
+        
+                angle0 = 0.0;
+        
+                P0 = Pj;
+                P(j,1,:) = reshape(P0, 1, 1, 3);
+                W(j,1) = Wc(j);
+        
+                idx = 1;
+        
+                for iarc = 1:narcs
+                    angle1 = angle0 + dtheta;
+                    angleM = angle0 + 0.5*dtheta;
+        
+                    P2 = O + r*cos(angle1)*X + r*sin(angle1)*Y;
+        
+                    % Exact rational conic middle control point.
+                    % Equivalent to intersecting endpoint tangent lines.
+                    P1 = O + (r / wm) * (cos(angleM)*X + sin(angleM)*Y);
+        
+                    P(j,idx+1,:) = reshape(P1, 1, 1, 3);
+                    W(j,idx+1) = Wc(j) * wm;
+        
+                    P(j,idx+2,:) = reshape(P2, 1, 1, 3);
+                    W(j,idx+2) = Wc(j);
+        
+                    idx = idx + 2;
+                    angle0 = angle1;
+                end
+            end
+        
+            S = geom.NURBSSurface(P, C.p, qrev, C.U, V, W);
         end
 
         function S = sweep(profileCurve, spineCurve, q, nStations, upVec)
@@ -2471,49 +2818,92 @@ classdef NURBSSurface < handle
 
         function [Qw, Uq] = curveKnotInsertHomogeneous(p, U, Pw, u, r)
         %CURVEKNOTINSERTHOMOGENEOUS Exact homogeneous curve knot insertion.
-        % A5.1-style insertion, repeated r times.
+        % Implements Piegl & Tiller Algorithm A5.1, CurveKnotIns.
         %
         % Pw is [n+1 x dim], usually dim=4.
         
-            Qw = Pw;
-            Uq = U;
+            if nargin < 5 || isempty(r), r = 1; end
+            r = floor(r);
         
-            for rep = 1:r
-                n = size(Qw,1) - 1;
-                span = geom.BasisFunctions.FindSpan(n, p, u, Uq);
-                s = sum(abs(Uq - u) < 1e-12);
+            if r < 0
+                error('NURBSSurface:curveKnotInsertHomogeneous', ...
+                    'r must be a nonnegative integer.');
+            end
         
-                if s >= p
-                    continue;
+            U = U(:).';
+        
+            if r == 0
+                Qw = Pw;
+                Uq = U;
+                return;
+            end
+        
+            n  = size(Pw,1) - 1;       % book zero-based n
+            mp = n + p + 1;            % book m = n+p+1
+        
+            % Your FindSpan returns MATLAB 1-based span.
+            k1 = geom.BasisFunctions.FindSpan(n, p, u, U);
+            k  = k1 - 1;               % convert to book zero-based span
+        
+            s = sum(abs(U - u) < 1e-12);
+        
+            if s + r > p
+                error('NURBSSurface:curveKnotInsertHomogeneous', ...
+                    'Cannot insert knot: multiplicity s+r exceeds degree p.');
+            end
+        
+            nq = n + r;
+        
+            Uq = zeros(1, mp + r + 1);
+            Qw = zeros(nq + 1, size(Pw,2));
+        
+            % ---- Load new knot vector ----
+            for i = 0:k
+                Uq(i+1) = U(i+1);
+            end
+        
+            for i = 1:r
+                Uq(k+i+1) = u;
+            end
+        
+            for i = k+1:mp
+                Uq(i+r+1) = U(i+1);
+            end
+        
+            % ---- Save unaltered control points ----
+            for i = 0:k-p
+                Qw(i+1,:) = Pw(i+1,:);
+            end
+        
+            for i = k-s:n
+                Qw(i+r+1,:) = Pw(i+1,:);
+            end
+        
+            % ---- Local affected control points ----
+            Rw = zeros(p-s+1, size(Pw,2));
+            for i = 0:p-s
+                Rw(i+1,:) = Pw(k-p+i+1,:);
+            end
+        
+            % ---- Insert the knot r times ----
+            L = 0;
+            for j = 1:r
+                L = k - p + j;
+        
+                for i = 0:p-j-s
+                    alpha = (u - U(L+i+1)) / (U(i+k+2) - U(L+i+1));
+                    Rw(i+1,:) = alpha * Rw(i+2,:) + (1.0 - alpha) * Rw(i+1,:);
                 end
         
-                Up = zeros(1, numel(Uq) + 1);
-                Up(1:span) = Uq(1:span);
-                Up(span+1) = u;
-                Up(span+2:end) = Uq(span+1:end);
+                Qw(L+1,:) = Rw(1,:);
+                Qw(k+r-j-s+1,:) = Rw(p-j-s+1,:);
+            end
         
-                Rw = zeros(size(Qw,1) + 1, size(Qw,2));
-        
-                Rw(1:span-p,:) = Qw(1:span-p,:);
-                Rw(span-s+1:end,:) = Qw(span-s:end,:);
-        
-                for j = (span-p+1):(span-s)
-                    denom = Uq(j+p) - Uq(j);
-                    if abs(denom) < 1e-14
-                        alpha = 0.0;
-                    else
-                        alpha = (u - Uq(j)) / denom;
-                    end
-        
-                    Rw(j,:) = alpha * Qw(j,:) + (1-alpha) * Qw(j-1,:);
-                end
-        
-                Qw = Rw;
-                Uq = Up;
+            % ---- Load remaining control points ----
+            for i = L+1:k-s-1
+                Qw(i+1,:) = Rw(i-L+1,:);
             end
         end
-
-
 
 
 
