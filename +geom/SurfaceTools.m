@@ -646,7 +646,688 @@ classdef SurfaceTools
             S2 = geom.NURBSSurface(P, S.p, S.q, S.U, S.V, W);
         end
 
+        function [S2, report] = matchG1EdgeRobust(S, edgeName, Sref, refEdgeName, varargin)
+        %MATCHG1EDGEROBUST Force one edge of S to be G0/G1 to a reference edge.
+        %
+        % This is intended for CATIA-style "Match Surface" behavior.
+        %
+        % It:
+        %   1) matches the boundary control row/column to the reference edge
+        %   2) chooses the reference tangent sign so it points into the existing S patch
+        %   3) sets the first interior row/column to enforce tangent-plane continuity
+        %
+        % Example:
+        %   [S2, rpt] = geom.SurfaceTools.matchG1EdgeRobust( ...
+        %       Sfill, 'v0', Sparent, 'v1', ...
+        %       'MagnitudeMode','target', ...
+        %       'Scale',1.0);
+        
+            pa = inputParser;
+            addParameter(pa, 'Scale', 1.0);
+            addParameter(pa, 'Samples', 51);
+            addParameter(pa, 'MagnitudeMode', 'target'); % 'target', 'reference', 'blend'
+            addParameter(pa, 'Blend', 0.5);
+            addParameter(pa, 'MinTangent', 1e-12);
+            parse(pa, varargin{:});
+            opts = pa.Results;
+        
+            side    = lower(char(string(edgeName)));
+            refSide = lower(char(string(refEdgeName)));
+        
+            E    = geom.SurfaceTools.edge(S, side);
+            Eref = geom.SurfaceTools.edge(Sref, refSide);
+        
+            [C, Cref, flipRef] = geom.SurfaceTools.compatibleEdgeCurves(E.curve, Eref.curve);
+        
+            % This direct control-row method requires the matched edge curve to have
+            % the same number of control points as the actual target edge.
+            nCtrl = size(C.P,1);
+        
+            switch side
+                case {'v0','v1'}
+                    if nCtrl ~= size(S.P,1)
+                        error('SurfaceTools:matchG1EdgeRobust', ...
+                            ['Target surface edge is not control-compatible after curve compatibility. ', ...
+                             'Refine/elevate the target surface first.']);
+                    end
+                    degCross = S.q;
+        
+                case {'u0','u1'}
+                    if nCtrl ~= size(S.P,2)
+                        error('SurfaceTools:matchG1EdgeRobust', ...
+                            ['Target surface edge is not control-compatible after curve compatibility. ', ...
+                             'Refine/elevate the target surface first.']);
+                    end
+                    degCross = S.p;
+        
+                otherwise
+                    error('SurfaceTools:matchG1EdgeRobust', ...
+                        'edgeName must be u0,u1,v0,v1.');
+            end
+        
+            if degCross < 1
+                error('SurfaceTools:matchG1EdgeRobust', ...
+                    'Target surface degree normal to edge must be at least 1.');
+            end
+        
+            P = S.P;
+            W = S.W;
+        
+            % Use Greville parameters of the target edge control curve.
+            t = geom.SurfaceTools.grevilleParamsForCurve(C);
+        
+            tref = t;
+            if flipRef
+                tref = 1 - t;
+            end
+        
+            % Current target inward derivative. This tells us which side of the seam
+            % the target patch currently occupies.
+            Dcur = geom.SurfaceTools.crossBoundaryDerivativeAlongEdge( ...
+                S, side, t, +1);
+        
+            % Reference inward derivative.
+            Dref = geom.SurfaceTools.crossBoundaryDerivativeAlongEdge( ...
+                Sref, refSide, tref, +1);
+        
+            if flipRef
+                Dref = flipud(Dref);
+            end
+        
+            % Choose reference tangent sign so it points into the target patch.
+            for i = 1:nCtrl
+                if norm(Dcur(i,:)) > opts.MinTangent && norm(Dref(i,:)) > opts.MinTangent
+                    if dot(Dref(i,:), Dcur(i,:)) < 0
+                        Dref(i,:) = -Dref(i,:);
+                    end
+                end
+            end
+        
+            % Magnitude policy. G1 only needs direction/tangent plane, not equal
+            % derivative magnitude.
+            mode = lower(char(string(opts.MagnitudeMode)));
+        
+            for i = 1:nCtrl
+                nr = norm(Dref(i,:));
+                nt = norm(Dcur(i,:));
+        
+                if nr < opts.MinTangent
+                    continue;
+                end
+        
+                dHat = Dref(i,:) / nr;
+        
+                switch mode
+                    case 'reference'
+                        mag = nr;
+        
+                    case 'target'
+                        if nt > opts.MinTangent
+                            mag = nt;
+                        else
+                            mag = nr;
+                        end
+        
+                    case 'blend'
+                        b = max(0,min(1,opts.Blend));
+                        if nt > opts.MinTangent
+                            mag = (1-b)*nr + b*nt;
+                        else
+                            mag = nr;
+                        end
+        
+                    otherwise
+                        error('SurfaceTools:matchG1EdgeRobust', ...
+                            'MagnitudeMode must be reference, target, or blend.');
+                end
+        
+                Dref(i,:) = opts.Scale * mag * dHat;
+            end
+        
+            Pedge = Cref.P;
+        
+            switch side
+                case 'v0'
+                    P(:,1,:) = reshape(Pedge, nCtrl, 1, 3);
+                    for i = 1:nCtrl
+                        P(i,2,:) = reshape(Pedge(i,:) + Dref(i,:)/degCross, 1, 1, 3);
+                    end
+        
+                case 'v1'
+                    P(:,end,:) = reshape(Pedge, nCtrl, 1, 3);
+                    for i = 1:nCtrl
+                        P(i,end-1,:) = reshape(Pedge(i,:) + Dref(i,:)/degCross, 1, 1, 3);
+                    end
+        
+                case 'u0'
+                    P(1,:,:) = reshape(Pedge, 1, nCtrl, 3);
+                    for j = 1:nCtrl
+                        P(2,j,:) = reshape(Pedge(j,:) + Dref(j,:)/degCross, 1, 1, 3);
+                    end
+        
+                case 'u1'
+                    P(end,:,:) = reshape(Pedge, 1, nCtrl, 3);
+                    for j = 1:nCtrl
+                        P(end-1,j,:) = reshape(Pedge(j,:) + Dref(j,:)/degCross, 1, 1, 3);
+                    end
+            end
+        
+            S2 = geom.NURBSSurface(P, S.p, S.q, S.U, S.V, W);
+        
+            report = geom.SurfaceTools.edgeReport( ...
+                S2, edgeName, Sref, refEdgeName, opts.Samples);
+        end
 
+        
+        function report = edgeG1Report(Sa, edgeA, Sb, edgeB, nSample)
+        %EDGEG1REPORT More detailed seam continuity report.
+        %
+        % Reports:
+        %   G0 gap
+        %   normal-angle mismatch
+        %   cross-boundary tangent parallelism mismatch
+        %
+        % For true G1, normal angle should be near zero. The cross-boundary
+        % derivative may point opposite across a seam, so this reports parallelism:
+        % min(angle, 180-angle).
+        
+            if nargin < 5 || isempty(nSample)
+                nSample = 51;
+            end
+        
+            base = geom.SurfaceTools.edgeReport(Sa, edgeA, Sb, edgeB, nSample);
+        
+            ea = geom.SurfaceTools.edge(Sa, edgeA);
+            eb = geom.SurfaceTools.edge(Sb, edgeB);
+            [Ca, ~, flipB] = geom.SurfaceTools.compatibleEdgeCurves(ea.curve, eb.curve);
+        
+            t = linspace(0,1,nSample).';
+        
+            crossAng = zeros(nSample,1);
+        
+            for k = 1:nSample
+                ta = t(k);
+                tb = t(k);
+                if flipB
+                    tb = 1 - tb;
+                end
+        
+                Da = geom.SurfaceTools.crossBoundaryDerivativeAlongEdge( ...
+                    Sa, edgeA, ta, +1);
+        
+                Db = geom.SurfaceTools.crossBoundaryDerivativeAlongEdge( ...
+                    Sb, edgeB, tb, +1);
+        
+                if norm(Da) < eps || norm(Db) < eps
+                    crossAng(k) = NaN;
+                else
+                    c = dot(Da, Db) / (norm(Da)*norm(Db));
+                    c = min(1,max(-1,c));
+                    a = acosd(c);
+                    crossAng(k) = min(a, 180-a);
+                end
+            end
+        
+            report = base;
+            report.maxCrossTangentParallelAngleDeg = max(crossAng, [], 'omitnan');
+            report.rmsCrossTangentParallelAngleDeg = sqrt(mean(crossAng.^2, 'omitnan'));
+            report.nSample = nSample;
+            report.edgeA = edgeA;
+            report.edgeB = edgeB;
+            report.curveDegree = Ca.p;
+        end
+
+        function F = fourEdgeFill(Ev0, Ev1, Eu0, Eu1, varargin)
+        %FOUREDGEFILL Four-sided CATIA-style fill patch with G0/G1 edge options.
+        %
+        % Boundary convention:
+        %   Ev0 -> F(u,0)  bottom edge
+        %   Ev1 -> F(u,1)  top edge
+        %   Eu0 -> F(0,v)  left edge
+        %   Eu1 -> F(1,v)  right edge
+        %
+        % This version:
+        %   - degree-elevates the fill space by default
+        %   - restores exact G0 boundaries
+        %   - converts sampled derivative fields into derivative-control rows
+        %     before setting G1 rows/columns.
+        
+            pa = inputParser;
+            addParameter(pa, 'ContinuityV0', 'G1');
+            addParameter(pa, 'ContinuityV1', 'G1');
+            addParameter(pa, 'ContinuityU0', 'G1');
+            addParameter(pa, 'ContinuityU1', 'G1');
+        
+            addParameter(pa, 'DegreeU', 5);
+            addParameter(pa, 'DegreeV', 5);
+        
+            addParameter(pa, 'ScaleV0', 1.0);
+            addParameter(pa, 'ScaleV1', 1.0);
+            addParameter(pa, 'ScaleU0', 1.0);
+            addParameter(pa, 'ScaleU1', 1.0);
+        
+            addParameter(pa, 'CornerTolerance', 1e-7);
+            addParameter(pa, 'MinTangent', 1e-12);
+            parse(pa, varargin{:});
+            opts = pa.Results;
+        
+            contV0 = upper(string(opts.ContinuityV0));
+            contV1 = upper(string(opts.ContinuityV1));
+            contU0 = upper(string(opts.ContinuityU0));
+            contU1 = upper(string(opts.ContinuityU1));
+        
+            % ------------------------------------------------------------------
+            % 1. Auto-orient boundary curves.
+            % ------------------------------------------------------------------
+            Cb0 = Ev0.curve;
+            Ct0 = Ev1.curve;
+            Cl0 = Eu0.curve;
+            Cr0 = Eu1.curve;
+        
+            bestErr = inf;
+            best = [];
+        
+            for fb = 0:1
+                CbTry = maybeReverse(Cb0, fb);
+                for ft = 0:1
+                    CtTry = maybeReverse(Ct0, ft);
+                    for fl = 0:1
+                        ClTry = maybeReverse(Cl0, fl);
+                        for fr = 0:1
+                            CrTry = maybeReverse(Cr0, fr);
+        
+                            P00a = CbTry.evaluate(CbTry.domain(1));
+                            P10a = CbTry.evaluate(CbTry.domain(2));
+                            P01a = CtTry.evaluate(CtTry.domain(1));
+                            P11a = CtTry.evaluate(CtTry.domain(2));
+        
+                            P00b = ClTry.evaluate(ClTry.domain(1));
+                            P01b = ClTry.evaluate(ClTry.domain(2));
+                            P10b = CrTry.evaluate(CrTry.domain(1));
+                            P11b = CrTry.evaluate(CrTry.domain(2));
+        
+                            err = norm(P00a-P00b) + norm(P10a-P10b) + ...
+                                  norm(P01a-P01b) + norm(P11a-P11b);
+        
+                            if err < bestErr
+                                bestErr = err;
+                                best.Cb = CbTry;
+                                best.Ct = CtTry;
+                                best.Cl = ClTry;
+                                best.Cr = CrTry;
+                                best.flipB = logical(fb);
+                                best.flipT = logical(ft);
+                                best.flipL = logical(fl);
+                                best.flipR = logical(fr);
+                            end
+                        end
+                    end
+                end
+            end
+        
+            if bestErr > opts.CornerTolerance
+                warning('SurfaceTools:fourEdgeFill:CornerMismatch', ...
+                    'Best four-edge corner closure error = %.3e.', bestErr);
+            end
+        
+            Cb = best.Cb;
+            Ct = best.Ct;
+            Cl = best.Cl;
+            Cr = best.Cr;
+        
+            % ------------------------------------------------------------------
+            % 2. Degree elevate first, then make opposite pairs compatible.
+            % ------------------------------------------------------------------
+            pFill = max([opts.DegreeU, Cb.p, Ct.p, 3]);
+            qFill = max([opts.DegreeV, Cl.p, Cr.p, 3]);
+        
+            if Cb.p < pFill, Cb = Cb.elevate(pFill - Cb.p); end
+            if Ct.p < pFill, Ct = Ct.elevate(pFill - Ct.p); end
+            if Cl.p < qFill, Cl = Cl.elevate(qFill - Cl.p); end
+            if Cr.p < qFill, Cr = Cr.elevate(qFill - Cr.p); end
+        
+            [uvCurves, p, U] = geom.NURBSSurface.makeCompatibleCurves({Cb, Ct});
+            Cb = uvCurves{1};
+            Ct = uvCurves{2};
+        
+            [lrCurves, q, V] = geom.NURBSSurface.makeCompatibleCurves({Cl, Cr});
+            Cl = lrCurves{1};
+            Cr = lrCurves{2};
+        
+            nu = size(Cb.P,1);
+            nv = size(Cl.P,1);
+        
+            % ------------------------------------------------------------------
+            % 3. Initial Coons-like control net.
+            % ------------------------------------------------------------------
+            P = zeros(nu, nv, 3);
+            W = ones(nu, nv);
+        
+            P00 = 0.5 * (Cb.evaluate(Cb.domain(1)) + Cl.evaluate(Cl.domain(1)));
+            P10 = 0.5 * (Cb.evaluate(Cb.domain(2)) + Cr.evaluate(Cr.domain(1)));
+            P01 = 0.5 * (Ct.evaluate(Ct.domain(1)) + Cl.evaluate(Cl.domain(2)));
+            P11 = 0.5 * (Ct.evaluate(Ct.domain(2)) + Cr.evaluate(Cr.domain(2)));
+        
+            for i = 1:nu
+                uhat = greville01(i, p, U);
+                Pb = Cb.P(i,:);
+                Pt = Ct.P(i,:);
+        
+                for j = 1:nv
+                    vhat = greville01(j, q, V);
+                    Pl = Cl.P(j,:);
+                    Pr = Cr.P(j,:);
+        
+                    Su = (1-vhat)*Pb + vhat*Pt;
+                    Sv = (1-uhat)*Pl + uhat*Pr;
+        
+                    Sb = (1-uhat)*(1-vhat)*P00 + ...
+                          uhat   *(1-vhat)*P10 + ...
+                         (1-uhat)*vhat   *P01 + ...
+                          uhat   *vhat   *P11;
+        
+                    P(i,j,:) = reshape(Su + Sv - Sb, 1, 1, 3);
+                end
+            end
+        
+            restoreBoundaries();
+        
+            % ------------------------------------------------------------------
+            % 4. G1 rows/columns.
+            % ------------------------------------------------------------------
+            if contV0 == "G1"
+                t = grevilleVector01(Cb);
+                D = edgeDerivativeSamples(Ev0, t, best.flipB);
+                G = squeeze(P(:,end,:) - P(:,1,:));
+                D = orientIntoGap(D, G, opts.MinTangent);
+                D = opts.ScaleV0 * D;
+        
+                % Convert pointwise derivative samples into spline control values
+                % along the u direction.
+                D = derivativeSamplesToControl(D, p, U);
+        
+                for i = 1:nu
+                    P(i,2,:) = reshape(squeeze(P(i,1,:)).' + D(i,:)/q, 1, 1, 3);
+                end
+                W(:,2) = W(:,1);
+            end
+        
+            if contV1 == "G1"
+                t = grevilleVector01(Ct);
+                D = edgeDerivativeSamples(Ev1, t, best.flipT);
+                G = squeeze(P(:,1,:) - P(:,end,:));
+                D = orientIntoGap(D, G, opts.MinTangent);
+                D = opts.ScaleV1 * D;
+        
+                % Convert pointwise derivative samples into spline control values
+                % along the u direction.
+                D = derivativeSamplesToControl(D, p, U);
+        
+                for i = 1:nu
+                    P(i,end-1,:) = reshape(squeeze(P(i,end,:)).' + D(i,:)/q, 1, 1, 3);
+                end
+                W(:,end-1) = W(:,end);
+            end
+        
+            if contU0 == "G1"
+                t = grevilleVector01(Cl);
+                D = edgeDerivativeSamples(Eu0, t, best.flipL);
+                G = squeeze(P(end,:,:) - P(1,:,:));
+                D = orientIntoGap(D, G, opts.MinTangent);
+                D = opts.ScaleU0 * D;
+        
+                % Convert pointwise derivative samples into spline control values
+                % along the v direction.
+                D = derivativeSamplesToControl(D, q, V);
+        
+                for j = 1:nv
+                    P(2,j,:) = reshape(squeeze(P(1,j,:)).' + D(j,:)/p, 1, 1, 3);
+                end
+                W(2,:) = W(1,:);
+            end
+        
+            if contU1 == "G1"
+                t = grevilleVector01(Cr);
+                D = edgeDerivativeSamples(Eu1, t, best.flipR);
+                G = squeeze(P(1,:,:) - P(end,:,:));
+                D = orientIntoGap(D, G, opts.MinTangent);
+                D = opts.ScaleU1 * D;
+        
+                % Convert pointwise derivative samples into spline control values
+                % along the v direction.
+                D = derivativeSamplesToControl(D, q, V);
+        
+                for j = 1:nv
+                    P(end-1,j,:) = reshape(squeeze(P(end,j,:)).' + D(j,:)/p, 1, 1, 3);
+                end
+                W(end-1,:) = W(end,:);
+            end
+        
+            % Corner-adjacent compromise. This is intentionally mild; the main
+            % improvement comes from using derivative-control rows.
+            blendCorner(2,    2);
+            blendCorner(nu-1, 2);
+            blendCorner(2,    nv-1);
+            blendCorner(nu-1, nv-1);
+        
+            restoreBoundaries();
+        
+            F = geom.NURBSSurface(P, p, q, U, V, W);
+        
+            % ------------------------------------------------------------------
+            % Local helpers
+            % ------------------------------------------------------------------
+            function C = maybeReverse(Cin, doFlip)
+                C = Cin;
+                if doFlip
+                    C = C.reverse();
+                end
+            end
+        
+            function restoreBoundaries()
+                P(:,1,:)   = reshape(Cb.P, nu, 1, 3);
+                P(:,end,:) = reshape(Ct.P, nu, 1, 3);
+                P(1,:,:)   = reshape(Cl.P, 1, nv, 3);
+                P(end,:,:) = reshape(Cr.P, 1, nv, 3);
+        
+                W(:,1)     = Cb.W(:);
+                W(:,end)   = Ct.W(:);
+                W(1,:)     = Cl.W(:).';
+                W(end,:)   = Cr.W(:).';
+        
+                W(1,1)       = 0.5*(Cb.W(1)   + Cl.W(1));
+                W(end,1)     = 0.5*(Cb.W(end) + Cr.W(1));
+                W(1,end)     = 0.5*(Ct.W(1)   + Cl.W(end));
+                W(end,end)   = 0.5*(Ct.W(end) + Cr.W(end));
+            end
+        
+            function blendCorner(ii,jj)
+                if ii < 2 || ii > nu-1 || jj < 2 || jj > nv-1
+                    return;
+                end
+        
+                vals = zeros(0,3);
+        
+                if jj == 2 && contV0 == "G1"
+                    vals(end+1,:) = squeeze(P(ii,2,:)).'; %#ok<AGROW>
+                end
+                if jj == nv-1 && contV1 == "G1"
+                    vals(end+1,:) = squeeze(P(ii,nv-1,:)).'; %#ok<AGROW>
+                end
+                if ii == 2 && contU0 == "G1"
+                    vals(end+1,:) = squeeze(P(2,jj,:)).'; %#ok<AGROW>
+                end
+                if ii == nu-1 && contU1 == "G1"
+                    vals(end+1,:) = squeeze(P(nu-1,jj,:)).'; %#ok<AGROW>
+                end
+        
+                if size(vals,1) > 1
+                    P(ii,jj,:) = reshape(mean(vals,1), 1, 1, 3);
+                end
+            end
+        
+            function Dctrl = derivativeSamplesToControl(Dsamp, deg, K)
+                n = size(Dsamp,1);
+                A = zeros(n,n);
+            
+                dom = [K(deg+1), K(end-deg)];
+            
+                for rr = 1:n
+                    tt = greville01(rr, deg, K);
+                    uAbs = dom(1) + tt*(dom(2)-dom(1));
+            
+                    span = geom.BasisFunctions.FindSpan(n-1, deg, uAbs, K);
+                    N = geom.BasisFunctions.BasisFuns(span, uAbs, deg, K);
+            
+                    % FindSpan is 1-based. BasisFuns corresponds to basis indices:
+                    % span-deg, ..., span
+                    cols = (span-deg):span;
+            
+                    A(rr, cols) = N;
+                end
+            
+                Dctrl = A \ Dsamp;
+            end
+                    
+            function g = greville01(ii, deg, K)
+                if deg == 0
+                    g = 0.0;
+                else
+                    gAbs = sum(K(ii+1:ii+deg)) / deg;
+                    dom = [K(deg+1), K(end-deg)];
+                    if abs(dom(2)-dom(1)) < eps
+                        g = 0.0;
+                    else
+                        g = (gAbs - dom(1)) / (dom(2)-dom(1));
+                    end
+                end
+                g = max(0,min(1,g));
+            end
+        
+            function t = grevilleVector01(C)
+                n = size(C.P,1);
+                t = zeros(n,1);
+                for kk = 1:n
+                    t(kk) = greville01(kk, C.p, C.U);
+                end
+            end
+        
+            function D = edgeDerivativeSamples(E, t01, wasFlipped)
+                if wasFlipped
+                    tp = 1 - t01;
+                else
+                    tp = t01;
+                end
+        
+                D = geom.SurfaceTools.crossBoundaryDerivativeAlongEdge( ...
+                    E.surface, E.side, tp, +1);
+        
+                if wasFlipped
+                    D = flipud(D);
+                end
+            end
+        
+            function D = orientIntoGap(D, G, minTan)
+                for kk = 1:size(D,1)
+                    gk = G(kk,:);
+                    if norm(gk) > minTan && dot(D(kk,:), gk) < 0
+                        D(kk,:) = -D(kk,:);
+                    end
+                end
+            end
+        end
+
+
+
+        function report = edgeG1ReportInterior(Sa, edgeA, Sb, edgeB, varargin)
+        %EDGEG1REPORTINTERIOR G1 report excluding corner/end effects.
+        %
+        % Example:
+        %   r = geom.SurfaceTools.edgeG1ReportInterior(F4g1,'v0',Sb,'v1', ...
+        %       'NSample',101, ...
+        %       'TrimFraction',0.05);
+        
+            pa = inputParser;
+            addParameter(pa, 'NSample', 101);
+            addParameter(pa, 'TrimFraction', 0.05);
+            parse(pa, varargin{:});
+            opts = pa.Results;
+        
+            nSample = opts.NSample;
+            trim = max(0, min(0.49, opts.TrimFraction));
+        
+            t = linspace(trim, 1-trim, nSample).';
+        
+            ea = geom.SurfaceTools.edge(Sa, edgeA);
+            eb = geom.SurfaceTools.edge(Sb, edgeB);
+            [Ca, Cb, flipB] = geom.SurfaceTools.compatibleEdgeCurves(ea.curve, eb.curve);
+        
+            ua = geom.SurfaceTools.map01ToDomain(t, Ca.domain);
+        
+            if flipB
+                tb = 1 - t;
+            else
+                tb = t;
+            end
+            ub = geom.SurfaceTools.map01ToDomain(tb, Cb.domain);
+        
+            Pa = Ca.evaluate(ua);
+            Pb = Cb.evaluate(ub);
+        
+            gaps = vecnorm(Pa - Pb, 2, 2);
+        
+            normalAng = zeros(nSample,1);
+            crossAng  = zeros(nSample,1);
+        
+            for k = 1:nSample
+                ta = t(k);
+                tbk = tb(k);
+        
+                uvA = geom.SurfaceTools.edgeParam01(Sa, edgeA, ta);
+                uvB = geom.SurfaceTools.edgeParam01(Sb, edgeB, tbk);
+        
+                Na = Sa.normal(uvA(1), uvA(2));
+                Nb = Sb.normal(uvB(1), uvB(2));
+        
+                if norm(Na) < eps || norm(Nb) < eps
+                    normalAng(k) = NaN;
+                else
+                    c = abs(dot(Na,Nb)/(norm(Na)*norm(Nb)));
+                    c = min(1,max(-1,c));
+                    normalAng(k) = acosd(c);
+                end
+        
+                Da = geom.SurfaceTools.crossBoundaryDerivativeAlongEdge( ...
+                    Sa, edgeA, ta, +1);
+        
+                Db = geom.SurfaceTools.crossBoundaryDerivativeAlongEdge( ...
+                    Sb, edgeB, tbk, +1);
+        
+                if norm(Da) < eps || norm(Db) < eps
+                    crossAng(k) = NaN;
+                else
+                    c = dot(Da,Db)/(norm(Da)*norm(Db));
+                    c = min(1,max(-1,c));
+                    a = acosd(c);
+                    crossAng(k) = min(a, 180-a);
+                end
+            end
+        
+            report = struct();
+            report.maxGap = max(gaps);
+            report.rmsGap = sqrt(mean(gaps.^2));
+            report.maxNormalAngleDeg = max(normalAng, [], 'omitnan');
+            report.rmsNormalAngleDeg = sqrt(mean(normalAng.^2, 'omitnan'));
+            report.maxCrossTangentParallelAngleDeg = max(crossAng, [], 'omitnan');
+            report.rmsCrossTangentParallelAngleDeg = sqrt(mean(crossAng.^2, 'omitnan'));
+            report.nSample = nSample;
+            report.trimFraction = trim;
+        end
+
+
+
+
+    end
 
     methods (Static, Access = private)
 
